@@ -12,7 +12,7 @@ jobs:
           ref: '1.4.0'
           submodules: recursive
 
-      - name: 2. 注入配置与强制降级插件
+      - name: 2. 注入配置与环境补丁
         run: |
           # 注入你的域名与公钥
           sed -i "s#pub const RENDEZVOUS_SERVER: \&str = \"\";#pub const RENDEZVOUS_SERVER: \&str = \"rustdesk.hongde-group.com\";#g" libs/hbb_common/src/config.rs
@@ -21,6 +21,10 @@ jobs:
           # 修改包名和应用名
           sed -i 's/applicationId "com.carriez.flutter_hbb"/applicationId "com.dahuturd.app"/g' flutter/android/app/build.gradle
           sed -i 's/android:label="RustDesk"/android:label="myrd_"/g' flutter/android/app/src/main/AndroidManifest.xml
+
+          # 【关键补丁】：强制 Rust 跳过 opus 的自动检测逻辑
+          # 修改 Cargo.toml 强行开启 bundled 模式
+          find . -name "Cargo.toml" -exec sed -i 's/magnum-opus = "0.4.0"/magnum-opus = { version = "0.4.0", features = ["bundled"] }/g' {} +
 
           # 修复依赖冲突
           cd flutter
@@ -43,7 +47,7 @@ jobs:
         with:
           flutter-version: '3.19.0'
 
-      - name: 5. 全量补齐依赖并强制指引 Opus 路径 (解决 magnum-opus 报错)
+      - name: 5. 强制手动构建 (彻底解决 opus 报错)
         run: |
           sudo apt-get update
           sudo apt-get install -y nasm gperf cmake llvm-15 clang-15 libclang-15-dev \
@@ -57,20 +61,19 @@ jobs:
           cd flutter && flutter pub get && cd ..
           flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs \
                                       --dart-output flutter/lib/generated_bridge.dart \
-                                      --skip-deps-check \
-                                      --no-build-runner
+                                      --skip-deps-check --no-build-runner
           
-          # 设置 NDK 路径
+          # 提取 NDK 路径
           export ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME
           export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
-          export PATH=$TOOLCHAIN/bin:$PATH
           
-          # 【核心修复】：强制 magnum-opus 寻找 NDK 内置的 Opus 库，跳过 vcpkg 检查
-          # 我们告诉它不要去寻找系统库，而是由我们提供链接参数
-          export OPUS_STATIC=1
-          export CARGO_FEATURE_BUNDLED=1
+          # 【防御性变量】：防止任何第三方库尝试探测系统环境
+          export VCPKG_ROOT="/tmp/fake_vcpkg"
+          mkdir -p $VCPKG_ROOT
+          export OPUS_BUNDLED=1
+          export MAGNUM_OPUS_SKIP_BUILD=1
           
-          # 强制指定编译器
+          # 强制指定 NDK 工具链
           export CC_aarch64_linux_android=$TOOLCHAIN/bin/aarch64-linux-android33-clang
           export CXX_aarch64_linux_android=$TOOLCHAIN/bin/aarch64-linux-android33-clang++
           export AR_aarch64_linux_android=$TOOLCHAIN/bin/llvm-ar
@@ -84,7 +87,6 @@ jobs:
           cd flutter
           mkdir -p android/app/src/main/jniLibs/arm64-v8a
           cp ../target/aarch64-linux-android/release/librustdesk.so android/app/src/main/jniLibs/arm64-v8a/ || true
-          
           flutter build apk --release --target-platform android-arm64 --no-tree-shake-icons --no-pub
 
       - name: 7. 上传编译成功的 APK
