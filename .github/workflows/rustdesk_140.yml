@@ -14,7 +14,7 @@ jobs:
 
       - name: 2. 注入配置与强制降级插件
         run: |
-          # 使用 # 作为分隔符，彻底解决公钥中 @ 符号导致的 sed 报错
+          # 使用 # 作为分隔符，彻底解决公钥中 @ 符号导致的报错
           sed -i "s#pub const RENDEZVOUS_SERVER: \&str = \"\";#pub const RENDEZVOUS_SERVER: \&str = \"rustdesk.hongde-group.com\";#g" libs/hbb_common/src/config.rs
           sed -i "s#pub const RS_PUB_KEY: \&str = \"\";#pub const RS_PUB_KEY: \&str = \"DAhutu@2025\";#g" libs/hbb_common/src/config.rs
           
@@ -22,11 +22,20 @@ jobs:
           sed -i 's/applicationId "com.carriez.flutter_hbb"/applicationId "com.dahuturd.app"/g' flutter/android/app/build.gradle
           sed -i 's/android:label="RustDesk"/android:label="myrd_"/g' flutter/android/app/src/main/AndroidManifest.xml
 
-          # 强制锁定依赖版本以兼容 Flutter 3.19 (解决 Version Solving 报错)
+          # 【核心修复】：解决 Duplicate mapping key 报错
           cd flutter
-          sed -i 's/extended_text: ^14.0.0/extended_text: 13.0.2/g' pubspec.yaml
-          echo "dependency_overrides:" >> pubspec.yaml
-          echo "  extended_text: 13.0.2" >> pubspec.yaml
+          # 先删除原本可能存在的 14.0.0 定义
+          sed -i '/extended_text: ^14.0.0/d' pubspec.yaml
+          
+          # 检查文件中是否已有 dependency_overrides
+          if grep -q "dependency_overrides:" pubspec.yaml; then
+            # 如果已有，就在该行后面插入强制版本锁定
+            sed -i '/dependency_overrides:/a \  extended_text: 13.0.2' pubspec.yaml
+          else
+            # 如果没有，则在文件末尾追加
+            echo "dependency_overrides:" >> pubspec.yaml
+            echo "  extended_text: 13.0.2" >> pubspec.yaml
+          fi
 
       - name: 3. 环境准备 (JDK 17 & Flutter 3.19.0)
         uses: actions/setup-java@v4
@@ -48,7 +57,7 @@ jobs:
           rustup target add aarch64-linux-android
           cargo install flutter_rust_bridge_codegen --version 1.80.1
           
-          # 先生成 lock 文件防止生成器报错
+          # 生成锁定文件
           cd flutter && flutter pub get && cd ..
           
           # 生成绑定代码
