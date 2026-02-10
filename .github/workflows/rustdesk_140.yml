@@ -1,4 +1,4 @@
-name: RustDesk-1.4.0-Total-Fix
+name: RustDesk-1.4.0-Total-Success
 on:
   workflow_dispatch:
 
@@ -22,7 +22,7 @@ jobs:
           sed -i 's/applicationId "com.carriez.flutter_hbb"/applicationId "com.dahuturd.app"/g' flutter/android/app/build.gradle
           sed -i 's/android:label="RustDesk"/android:label="myrd_"/g' flutter/android/app/src/main/AndroidManifest.xml
 
-          # 强制开启捆绑特性 (解决 opus 报错)
+          # 强制开启捆绑特性 (彻底解决 opus/vpx 编译搜索问题)
           find . -name "Cargo.toml" -exec sed -i 's/magnum-opus = "0.4.0"/magnum-opus = { version = "0.4.0", features = ["bundled"] }/g' {} +
 
           # 修复 Flutter 依赖冲突
@@ -41,48 +41,40 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: 4. 配置 Flutter 3.19.0
+      - name: 4. 配置工具与 Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.19.0'
 
-      - name: 5. 暴力配置工具链并编译 (解决 bits/header 报错)
+      - name: 5. 自动化 NDK 编译 (解决 stddef.h 缺失)
         run: |
           sudo apt-get update
-          sudo apt-get install -y nasm gperf cmake pkg-config libopus-dev libvpx-dev
+          sudo apt-get install -y nasm gperf cmake pkg-config
           
+          # 安装专用的 Rust-Android 编译插件
+          cargo install cargo-ndk
           rustup target add aarch64-linux-android
           cargo install flutter_rust_bridge_codegen --version 1.80.1
           
+          # 生成桥接代码
           cd flutter && flutter pub get && cd ..
           flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --skip-deps-check --no-build-runner
           
-          # 【绝对路径方案】：锁定 NDK 25.x (GitHub Actions 默认自带)
+          # 【核心修复】：使用 cargo-ndk 自动接管编译环境
+          # 它会自动找到 $ANDROID_NDK_LATEST_HOME 里的正确 clang 和头文件路径
           export ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME
-          export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
-          export TARGET=aarch64-linux-android
-          export API=33
-          
-          # 强制指定编译器全路径，不带任何模糊地带
-          export CC_aarch64_linux_android=$TOOLCHAIN/bin/${TARGET}${API}-clang
-          export CXX_aarch64_linux_android=$TOOLCHAIN/bin/${TARGET}${API}-clang++
-          export AR_aarch64_linux_android=$TOOLCHAIN/bin/llvm-ar
-          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$TOOLCHAIN/bin/${TARGET}${API}-clang
-          
-          # 【最关键一步】：手动清理编译器默认搜索路径，强制只看 NDK Sysroot
-          export CFLAGS_aarch64_linux_android="-nostdinc -I$TOOLCHAIN/sysroot/usr/include -I$TOOLCHAIN/sysroot/usr/include/$TARGET"
-          
-          # 辅助变量
           export OPUS_BUNDLED=1
           
-          # 编译 Rust 核心
-          cargo build --release --target aarch64-linux-android
+          cargo ndk -t arm64-v8a -p 33 build --release
 
       - name: 6. 最终打包 APK
         run: |
           cd flutter
           mkdir -p android/app/src/main/jniLibs/arm64-v8a
-          cp ../target/aarch64-linux-android/release/librustdesk.so android/app/src/main/jniLibs/arm64-v8a/ || echo "SO file missing!"
+          # 移动编译产物
+          cp ../target/aarch64-linux-android/release/librustdesk.so android/app/src/main/jniLibs/arm64-v8a/
+          
+          # 执行 Flutter 打包
           flutter build apk --release --target-platform android-arm64 --no-tree-shake-icons --no-pub
 
       - name: 7. 上传编译成功的 APK
