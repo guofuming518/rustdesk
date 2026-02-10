@@ -17,53 +17,57 @@ jobs:
           # 注入域名服务器
           sed -i 's|pub const RENDEZVOUS_SERVER: \&str = "";|pub const RENDEZVOUS_SERVER: \&str = "rustdesk.hongde-group.com";|g' libs/hbb_common/src/config.rs
           
-          # 注入公钥 (使用 | 作为分隔符避免字符冲突)
+          # 注入公钥
           sed -i 's|pub const RS_PUB_KEY: \&str = "";|pub const RS_PUB_KEY: \&str = "DAhutu@2025";|g' libs/hbb_common/src/config.rs
           
           # 修改包名和应用名
           sed -i 's/applicationId "com.carriez.flutter_hbb"/applicationId "com.dahuturd.app"/g' flutter/android/app/build.gradle
           sed -i 's/android:label="RustDesk"/android:label="myrd"/g' flutter/android/app/src/main/AndroidManifest.xml
 
-      - name: 3. 环境准备 (JDK 17)
+      - name: 3. 强制修复依赖冲突 (关键步骤)
+        run: |
+          cd flutter
+          # 强制将 extended_text 降低到兼容 Flutter 3.19 的版本
+          sed -i 's/extended_text: ^14.0.0/extended_text: 13.0.2/g' pubspec.yaml
+          # 移除已经过期的锁定文件
+          rm -f pubspec.lock
+
+      - name: 4. 环境准备 (JDK 17)
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: 4. 配置 Flutter 3.19.0 (解决插件版本冲突的关键)
+      - name: 5. 配置 Flutter 3.19.0
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.19.0'
 
-      - name: 5. 补齐系统依赖并编译核心
+      - name: 6. 解决系统依赖并编译 Rust 核心
         run: |
-          # 强制安装最新的 LLVM 和 Clang 解决 ffigen 报错
           sudo apt-get update
           sudo apt-get install -y nasm gperf cmake llvm-15 clang-15 libclang-15-dev
           
-          # 设置 LLVM 环境变量，让 ffigen 能找到工具链
           export LLVM_PATH=/usr/lib/llvm-15
-          
           rustup target add aarch64-linux-android
+          
           cargo install flutter_rust_bridge_codegen --version 1.80.1
           
-          # 手动生成绑定代码，跳过依赖检查
+          # 手动生成绑定，彻底跳过 ffigen
           flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs \
                                       --dart-output flutter/lib/generated_bridge.dart \
-                                      --skip-deps-check
+                                      --skip-deps-check \
+                                      --no-build-runner
           
-          # 编译 Rust 底层库
           cargo build --release --target aarch64-linux-android -p librustdesk
 
-      - name: 6. 最终打包 APK
+      - name: 7. 最终打包 APK
         run: |
           cd flutter
-          # 解决可能存在的依赖锁定问题
           flutter pub get
-          # 强制使用 release 模式构建 arm64 架构
           flutter build apk --release --target-platform android-arm64 --no-tree-shake-icons
 
-      - name: 7. 上传编译成功的 APK
+      - name: 8. 上传编译成功的 APK
         uses: actions/upload-artifact@v4
         with:
           name: myrd-1.4.0-APK
