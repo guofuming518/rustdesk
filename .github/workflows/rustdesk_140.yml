@@ -14,7 +14,7 @@ jobs:
 
       - name: 2. 注入配置与强制降级插件
         run: |
-          # 使用 # 作为分隔符，彻底解决公钥中 @ 符号导致的报错
+          # 使用 # 作为分隔符注入你的信息
           sed -i "s#pub const RENDEZVOUS_SERVER: \&str = \"\";#pub const RENDEZVOUS_SERVER: \&str = \"rustdesk.hongde-group.com\";#g" libs/hbb_common/src/config.rs
           sed -i "s#pub const RS_PUB_KEY: \&str = \"\";#pub const RS_PUB_KEY: \&str = \"DAhutu@2025\";#g" libs/hbb_common/src/config.rs
           
@@ -43,7 +43,7 @@ jobs:
         with:
           flutter-version: '3.19.0'
 
-      - name: 5. 解决依赖并编译 Rust 核心
+      - name: 5. 解决依赖并编译 Rust 核心 (注入 NDK 工具链)
         run: |
           sudo apt-get update
           sudo apt-get install -y nasm gperf cmake llvm-15 clang-15 libclang-15-dev
@@ -61,13 +61,23 @@ jobs:
                                       --skip-deps-check \
                                       --no-build-runner
           
-          # 【核心修复】：改用通用的 build 指令，不显式指定包名，避免找不到 librustdesk 的问题
+          # 【核心修复】：显式指定 NDK 工具链路径，解决 image_f59455 报错
+          # GitHub 默认 NDK 路径通常在 $ANDROID_NDK_LATEST_HOME
+          export ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME
+          export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
+          
+          # 强制 Rust 使用 NDK 的 Clang
+          export CC_aarch64_linux_android=aarch64-linux-android33-clang
+          export AR_aarch64_linux_android=llvm-ar
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=aarch64-linux-android33-clang
+          
+          # 编译 Rust
           cargo build --release --target aarch64-linux-android
 
       - name: 6. 最终打包 APK
         run: |
           cd flutter
-          # 确保 Rust 编译出的 .so 文件能被正确打包（创建对应目录）
+          # 确保 .so 文件到位
           mkdir -p android/app/src/main/jniLibs/arm64-v8a
           cp ../target/aarch64-linux-android/release/librustdesk.so android/app/src/main/jniLibs/arm64-v8a/ || true
           
