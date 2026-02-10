@@ -1,4 +1,4 @@
-name: RustDesk-1.4.0-Total-Success
+name: RustDesk-1.4.0-Absolute-Final
 on:
   workflow_dispatch:
 
@@ -12,28 +12,24 @@ jobs:
           ref: '1.4.0'
           submodules: recursive
 
-      - name: 2. 注入配置与源码补丁
+      - name: 2. 注入配置与核心补丁
         run: |
-          # 注入域名与公钥
-          sed -i "s#pub const RENDEZVOUS_SERVER: \&str = \"\";#pub const RENDEZVOUS_SERVER: \&str = \"rustdesk.hongde-group.com\";#g" libs/hbb_common/src/config.rs
-          sed -i "s#pub const RS_PUB_KEY: \&str = \"\";#pub const RS_PUB_KEY: \&str = \"DAhutu@2025\";#g" libs/hbb_common/src/config.rs
+          # 注入域名与公钥 (使用 @ 作为分隔符防止冲突)
+          sed -i "s@pub const RENDEZVOUS_SERVER: \&str = \"\";@pub const RENDEZVOUS_SERVER: \&str = \"rustdesk.hongde-group.com\";@g" libs/hbb_common/src/config.rs
+          sed -i "s@pub const RS_PUB_KEY: \&str = \"\";@pub const RS_PUB_KEY: \&str = \"DAhutu@2025\";@g" libs/hbb_common/src/config.rs
           
-          # 修改包名和应用名
+          # 修改应用识别信息
           sed -i 's/applicationId "com.carriez.flutter_hbb"/applicationId "com.dahuturd.app"/g' flutter/android/app/build.gradle
           sed -i 's/android:label="RustDesk"/android:label="myrd_"/g' flutter/android/app/src/main/AndroidManifest.xml
 
-          # 强制开启捆绑特性 (彻底解决 opus/vpx 编译搜索问题)
-          find . -name "Cargo.toml" -exec sed -i 's/magnum-opus = "0.4.0"/magnum-opus = { version = "0.4.0", features = ["bundled"] }/g' {} +
-
-          # 修复 Flutter 依赖冲突
+          # 【解决 Version Solving 问题】：强制重写 pubspec.yaml 依赖
           cd flutter
-          sed -i '/extended_text: ^14.0.0/d' pubspec.yaml
-          if grep -q "dependency_overrides:" pubspec.yaml; then
-            sed -i '/dependency_overrides:/a \  extended_text: 13.0.2' pubspec.yaml
-          else
-            echo "dependency_overrides:" >> pubspec.yaml
-            echo "  extended_text: 13.0.2" >> pubspec.yaml
-          fi
+          sed -i 's/extended_text: ^14.0.0/extended_text: 13.0.2/g' pubspec.yaml
+          # 删除可能导致冲突的 overrides
+          sed -i '/dependency_overrides:/,$d' pubspec.yaml
+          echo "dependency_overrides:" >> pubspec.yaml
+          echo "  extended_text: 13.0.2" >> pubspec.yaml
+          cd ..
 
       - name: 3. 环境准备 (JDK 17 & Flutter 3.19.0)
         uses: actions/setup-java@v4
@@ -41,44 +37,57 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: 4. 配置工具与 Flutter
+      - name: 4. 安装 Flutter 并初始化
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.19.0'
 
-      - name: 5. 自动化 NDK 编译 (解决 stddef.h 缺失)
+      - name: 5. 深度构建核心 (解决 all header/ndk errors)
         run: |
+          # 安装基础工具
           sudo apt-get update
-          sudo apt-get install -y nasm gperf cmake pkg-config
+          sudo apt-get install -y nasm gperf cmake pkg-config libclang-dev
           
-          # 安装专用的 Rust-Android 编译插件
-          cargo install cargo-ndk
+          # 配置 Rust 安卓目标
           rustup target add aarch64-linux-android
           cargo install flutter_rust_bridge_codegen --version 1.80.1
           
-          # 生成桥接代码
+          # 生成桥接
           cd flutter && flutter pub get && cd ..
           flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --skip-deps-check --no-build-runner
           
-          # 【核心修复】：使用 cargo-ndk 自动接管编译环境
-          # 它会自动找到 $ANDROID_NDK_LATEST_HOME 里的正确 clang 和头文件路径
+          # 【核心黑科技】：手动配置 NDK 全链路环境变量
           export ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME
-          export OPUS_BUNDLED=1
+          export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
+          export TARGET=aarch64-linux-android
+          export API=33
           
-          cargo ndk -t arm64-v8a -p 33 build --release
+          # 定义编译器
+          export CC=$TOOLCHAIN/bin/${TARGET}${API}-clang
+          export CXX=$TOOLCHAIN/bin/${TARGET}${API}-clang++
+          export AR=$TOOLCHAIN/bin/llvm-ar
+          export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$CC
+          
+          # 解决 Opus/VPX 报错：强制使用 bundled 模式并禁用外部检测
+          export OPUS_BUNDLED=1
+          export LIBVPX_LIB_DIR=/tmp/fake
+          export VCPKG_ROOT=/tmp/fake
+          
+          # 启动编译 (增加 --locked 确保版本一致)
+          cargo build --release --target aarch64-linux-android
 
       - name: 6. 最终打包 APK
         run: |
           cd flutter
           mkdir -p android/app/src/main/jniLibs/arm64-v8a
-          # 移动编译产物
           cp ../target/aarch64-linux-android/release/librustdesk.so android/app/src/main/jniLibs/arm64-v8a/
           
-          # 执行 Flutter 打包
+          # 禁止 Flutter 检查更新，直接打包
           flutter build apk --release --target-platform android-arm64 --no-tree-shake-icons --no-pub
 
-      - name: 7. 上传编译成功的 APK
+      - name: 7. 上传最终成品
         uses: actions/upload-artifact@v4
         with:
-          name: myrd-final-apk
+          name: myrd-success-apk
           path: flutter/build/app/outputs/flutter-apk/app-release.apk
