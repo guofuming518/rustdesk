@@ -12,20 +12,17 @@ jobs:
           ref: '1.4.0'
           submodules: recursive
 
-      - name: 2. 注入配置与环境补丁
+      - name: 2. 注入配置与源码补丁
         run: |
-          # 注入域名与公钥
           sed -i "s#pub const RENDEZVOUS_SERVER: \&str = \"\";#pub const RENDEZVOUS_SERVER: \&str = \"rustdesk.hongde-group.com\";#g" libs/hbb_common/src/config.rs
           sed -i "s#pub const RS_PUB_KEY: \&str = \"\";#pub const RS_PUB_KEY: \&str = \"DAhutu@2025\";#g" libs/hbb_common/src/config.rs
           
-          # 修改包名和应用名
           sed -i 's/applicationId "com.carriez.flutter_hbb"/applicationId "com.dahuturd.app"/g' flutter/android/app/build.gradle
           sed -i 's/android:label="RustDesk"/android:label="myrd_"/g' flutter/android/app/src/main/AndroidManifest.xml
 
-          # 【关键】：开启所有底层库的 Bundled 特性，防止外部搜索
+          # 强制开启 bundled 特性
           find . -name "Cargo.toml" -exec sed -i 's/magnum-opus = "0.4.0"/magnum-opus = { version = "0.4.0", features = ["bundled"] }/g' {} +
 
-          # 修复依赖冲突
           cd flutter
           sed -i '/extended_text: ^14.0.0/d' pubspec.yaml
           if grep -q "dependency_overrides:" pubspec.yaml; then
@@ -46,35 +43,39 @@ jobs:
         with:
           flutter-version: '3.19.0'
 
-      - name: 5. 深度配置 NDK 系统路径并编译 (解决 bits/header 报错)
+      - name: 5. 补齐交叉编译依赖并打包 (解决 opus/vpx 缺失)
         run: |
           sudo apt-get update
           sudo apt-get install -y nasm gperf cmake llvm-15 clang-15 libclang-15-dev pkg-config
 
-          export LLVM_PATH=/usr/lib/llvm-15
           rustup target add aarch64-linux-android
           cargo install flutter_rust_bridge_codegen --version 1.80.1
           
           cd flutter && flutter pub get && cd ..
           flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --skip-deps-check --no-build-runner
           
-          # 【核心修复】：重新定义 NDK 工具链和 Sysroot
+          # 【核心修复】：手动为 NDK 补齐缺失的头文件目录
           export ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME
           export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
-          export TARGET_SYSROOT=$TOOLCHAIN/sysroot
+          export SYSROOT=$TOOLCHAIN/sysroot
           
-          # 强制编译器只看 NDK 内部，不要看宿主机 /usr/include
-          export CLANG_FLAGS="--sysroot=$TARGET_SYSROOT -I$TARGET_SYSROOT/usr/include/aarch64-linux-android"
-          export CC_aarch64_linux_android="$TOOLCHAIN/bin/aarch64-linux-android33-clang $CLANG_FLAGS"
-          export CXX_aarch64_linux_android="$TOOLCHAIN/bin/aarch64-linux-android33-clang++ $CLANG_FLAGS"
-          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$TOOLCHAIN/bin/aarch64-linux-android33-clang"
-          export AR_aarch64_linux_android="$TOOLCHAIN/bin/llvm-ar"
-          
-          # 绕过 opus/vcpkg 检测
-          export VCPKG_ROOT="/tmp/fake" && mkdir -p $VCPKG_ROOT
-          export OPUS_BUNDLED=1
+          # 创建头文件软链接，欺骗编译器使其能找到 opus 和 vpx
+          # 我们直接利用源码中可能存在的 libs 目录或系统目录
+          sudo mkdir -p $SYSROOT/usr/include/opus
+          sudo mkdir -p $SYSROOT/usr/include/vpx
+          sudo cp /usr/include/opus/*.h $SYSROOT/usr/include/opus/ || true
+          sudo cp /usr/include/vpx/*.h $SYSROOT/usr/include/vpx/ || true
 
-          # 编译 Rust
+          # 设置环境变量
+          export CC_aarch64_linux_android="$TOOLCHAIN/bin/aarch64-linux-android33-clang --sysroot=$SYSROOT"
+          export CXX_aarch64_linux_android="$TOOLCHAIN/bin/aarch64-linux-android33-clang++ --sysroot=$SYSROOT"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$TOOLCHAIN/bin/aarch64-linux-android33-clang"
+          
+          # 强制开启捆绑模式，忽略系统库检测
+          export OPUS_BUNDLED=1
+          export LIBVPX_LIB_DIR=/usr/lib/aarch64-linux-gnu
+          
+          # 运行 Rust 编译
           cargo build --release --target aarch64-linux-android
 
       - name: 6. 最终打包 APK
