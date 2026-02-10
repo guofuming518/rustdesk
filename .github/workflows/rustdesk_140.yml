@@ -14,7 +14,7 @@ jobs:
 
       - name: 2. 注入配置与强制降级插件
         run: |
-          # 使用 # 作为分隔符注入你的信息
+          # 使用 # 作为分隔符注入
           sed -i "s#pub const RENDEZVOUS_SERVER: \&str = \"\";#pub const RENDEZVOUS_SERVER: \&str = \"rustdesk.hongde-group.com\";#g" libs/hbb_common/src/config.rs
           sed -i "s#pub const RS_PUB_KEY: \&str = \"\";#pub const RS_PUB_KEY: \&str = \"DAhutu@2025\";#g" libs/hbb_common/src/config.rs
           
@@ -22,7 +22,7 @@ jobs:
           sed -i 's/applicationId "com.carriez.flutter_hbb"/applicationId "com.dahuturd.app"/g' flutter/android/app/build.gradle
           sed -i 's/android:label="RustDesk"/android:label="myrd_"/g' flutter/android/app/src/main/AndroidManifest.xml
 
-          # 修复 YAML 重复键值报错
+          # 修复 YAML 重复键值
           cd flutter
           sed -i '/extended_text: ^14.0.0/d' pubspec.yaml
           if grep -q "dependency_overrides:" pubspec.yaml; then
@@ -43,45 +43,48 @@ jobs:
         with:
           flutter-version: '3.19.0'
 
-      - name: 5. 解决依赖并编译 Rust 核心 (注入 NDK 工具链)
+      - name: 5. 补齐系统库并编译 Rust 核心 (解决 magnum-opus 报错)
         run: |
+          # 1. 安装 magnum-opus 和核心编译所需的系统依赖
           sudo apt-get update
-          sudo apt-get install -y nasm gperf cmake llvm-15 clang-15 libclang-15-dev
-          
+          sudo apt-get install -y nasm gperf cmake llvm-15 clang-15 libclang-15-dev \
+                                 pkg-config libopus-dev libvpx-dev libx11-dev
+
           export LLVM_PATH=/usr/lib/llvm-15
           rustup target add aarch64-linux-android
           cargo install flutter_rust_bridge_codegen --version 1.80.1
           
-          # 生成锁定文件
+          # 2. 准备 Flutter 锁定文件
           cd flutter && flutter pub get && cd ..
           
-          # 生成绑定代码
+          # 3. 运行代码生成
           flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs \
                                       --dart-output flutter/lib/generated_bridge.dart \
                                       --skip-deps-check \
                                       --no-build-runner
           
-          # 【核心修复】：显式指定 NDK 工具链路径，解决 image_f59455 报错
-          # GitHub 默认 NDK 路径通常在 $ANDROID_NDK_LATEST_HOME
+          # 4. 设置 NDK 环境变量 (确保 clang 路径正确)
           export ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME
-          export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
+          export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
+          export PATH=$TOOLCHAIN/bin:$PATH
           
-          # 强制 Rust 使用 NDK 的 Clang
-          export CC_aarch64_linux_android=aarch64-linux-android33-clang
-          export AR_aarch64_linux_android=llvm-ar
-          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=aarch64-linux-android33-clang
+          # 强制指定安卓 Target 的编译器和链接器
+          export CC_aarch64_linux_android=$TOOLCHAIN/bin/aarch64-linux-android33-clang
+          export CXX_aarch64_linux_android=$TOOLCHAIN/bin/aarch64-linux-android33-clang++
+          export AR_aarch64_linux_android=$TOOLCHAIN/bin/llvm-ar
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$TOOLCHAIN/bin/aarch64-linux-android33-clang
           
-          # 编译 Rust
+          # 5. 执行编译
           cargo build --release --target aarch64-linux-android
 
       - name: 6. 最终打包 APK
         run: |
           cd flutter
-          # 确保 .so 文件到位
           mkdir -p android/app/src/main/jniLibs/arm64-v8a
           cp ../target/aarch64-linux-android/release/librustdesk.so android/app/src/main/jniLibs/arm64-v8a/ || true
           
-          flutter build apk --release --target-platform android-arm64 --no-tree-shake-icons
+          # 使用 --no-pub 避免重新触发 pub get 覆盖我们的修改
+          flutter build apk --release --target-platform android-arm64 --no-tree-shake-icons --no-pub
 
       - name: 7. 上传编译成功的 APK
         uses: actions/upload-artifact@v4
