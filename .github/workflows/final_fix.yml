@@ -1,0 +1,45 @@
+name: RustDesk-1.4.0-Final-Fix
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: '1.4.0'
+          submodules: recursive
+
+      - name: Config
+        run: |
+          sed -i 's/pub const RENDEZVOUS_SERVER: \&str = "";/pub const RENDEZVOUS_SERVER: \&str = "rustdesk.hongde-group.com";/g' libs/hbb_common/src/config.rs
+          sed -i 's/pub const RS_PUB_KEY: \&str = "";/pub const RS_PUB_KEY: \&str = "DAhutu@2025";/g' libs/hbb_common/src/config.rs
+          sed -i 's/applicationId "com.carriez.flutter_hbb"/applicationId "com.dahuturd.app"/g' flutter/android/app/build.gradle
+          sed -i 's/android:label="RustDesk"/android:label="myrd"/g' flutter/android/app/src/main/AndroidManifest.xml
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.16.0'
+
+      - name: Build
+        run: |
+          sudo apt-get update && sudo apt-get install -y nasm gperf libclang-dev cmake
+          cargo install flutter_rust_bridge_codegen --version 1.80.1
+          flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart
+          cargo build --release --target aarch64-linux-android -p librustdesk
+          cd flutter && flutter pub get && flutter build apk --release --target-platform android-arm64 --no-tree-shake-icons
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: Custom-APK
+          path: flutter/build/app/outputs/flutter-apk/app-release.apk
