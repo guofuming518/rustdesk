@@ -12,62 +12,62 @@ jobs:
           ref: '1.4.0'
           submodules: recursive
 
-      - name: 2. 注入你的配置信息
+      - name: 2. 注入配置与强制降级插件 (解决 Version Solving 报错)
         run: |
-          # 注入域名服务器
-          sed -i 's|pub const RENDEZVOUS_SERVER: \&str = "";|pub const RENDEZVOUS_SERVER: \&str = "rustdesk.hongde-group.com";|g' libs/hbb_common/src/config.rs
-          
-          # 注入公钥
-          sed -i 's|pub const RS_PUB_KEY: \&str = "";|pub const RS_PUB_KEY: \&str = "DAhutu@2025";|g' libs/hbb_common/src/config.rs
+          # 注入域名与公钥
+          sed -i 's\|pub const RENDEZVOUS_SERVER: \&str = "";\|pub const RENDEZVOUS_SERVER: \&str = "rustdesk.hongde-group.com";\|g' libs/hbb_common/src/config.rs
+          sed -i 's\|pub const RS_PUB_KEY: \&str = "";\|pub const RS_PUB_KEY: \&str = "DAhutu@2025";\|g' libs/hbb_common/src/config.rs
           
           # 修改包名和应用名
           sed -i 's/applicationId "com.carriez.flutter_hbb"/applicationId "com.dahuturd.app"/g' flutter/android/app/build.gradle
           sed -i 's/android:label="RustDesk"/android:label="myrd"/g' flutter/android/app/src/main/AndroidManifest.xml
 
-      - name: 3. 强制修复依赖冲突 (关键步骤)
-        run: |
+          # 【核心修复】不删除 lock 文件，而是直接修改 pubspec.yaml 强行锁定插件版本
           cd flutter
-          # 强制将 extended_text 降低到兼容 Flutter 3.19 的版本
           sed -i 's/extended_text: ^14.0.0/extended_text: 13.0.2/g' pubspec.yaml
-          # 移除已经过期的锁定文件
-          rm -f pubspec.lock
+          # 在文件末尾追加强制重写，彻底封死插件升级到 14.0.0 的可能
+          echo "dependency_overrides:" >> pubspec.yaml
+          echo "  extended_text: 13.0.2" >> pubspec.yaml
 
-      - name: 4. 环境准备 (JDK 17)
+      - name: 3. 环境准备 (JDK 17 & Flutter 3.19.0)
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: 5. 配置 Flutter 3.19.0
+      - name: 4. 配置 Flutter 3.19.0
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.19.0'
 
-      - name: 6. 解决系统依赖并编译 Rust 核心
+      - name: 5. 解决 ffigen 依赖并编译核心
         run: |
           sudo apt-get update
           sudo apt-get install -y nasm gperf cmake llvm-15 clang-15 libclang-15-dev
           
           export LLVM_PATH=/usr/lib/llvm-15
           rustup target add aarch64-linux-android
-          
           cargo install flutter_rust_bridge_codegen --version 1.80.1
           
-          # 手动生成绑定，彻底跳过 ffigen
+          # 生成绑定代码
           flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs \
                                       --dart-output flutter/lib/generated_bridge.dart \
                                       --skip-deps-check \
                                       --no-build-runner
           
-          cargo build --release --target aarch64-linux-android -p librustdesk
+          # 预先生成 pubspec.lock，防止 Step 6 找不到文件
+          cd flutter && flutter pub get
+          
+          # 编译 Rust
+          cd .. && cargo build --release --target aarch64-linux-android -p librustdesk
 
-      - name: 7. 最终打包 APK
+      - name: 6. 最终打包 APK
         run: |
           cd flutter
-          flutter pub get
+          # 确保这一步有锁定文件存在
           flutter build apk --release --target-platform android-arm64 --no-tree-shake-icons
 
-      - name: 8. 上传编译成功的 APK
+      - name: 7. 上传编译成功的 APK
         uses: actions/upload-artifact@v4
         with:
           name: myrd-1.4.0-APK
