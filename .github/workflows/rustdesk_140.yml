@@ -14,15 +14,18 @@ jobs:
 
       - name: 2. 注入配置与源码补丁
         run: |
+          # 注入域名与公钥
           sed -i "s#pub const RENDEZVOUS_SERVER: \&str = \"\";#pub const RENDEZVOUS_SERVER: \&str = \"rustdesk.hongde-group.com\";#g" libs/hbb_common/src/config.rs
           sed -i "s#pub const RS_PUB_KEY: \&str = \"\";#pub const RS_PUB_KEY: \&str = \"DAhutu@2025\";#g" libs/hbb_common/src/config.rs
           
+          # 修改包名和应用名
           sed -i 's/applicationId "com.carriez.flutter_hbb"/applicationId "com.dahuturd.app"/g' flutter/android/app/build.gradle
           sed -i 's/android:label="RustDesk"/android:label="myrd_"/g' flutter/android/app/src/main/AndroidManifest.xml
 
-          # 强制开启 bundled 特性
+          # 强制开启捆绑特性
           find . -name "Cargo.toml" -exec sed -i 's/magnum-opus = "0.4.0"/magnum-opus = { version = "0.4.0", features = ["bundled"] }/g' {} +
 
+          # 修复 Flutter 依赖冲突
           cd flutter
           sed -i '/extended_text: ^14.0.0/d' pubspec.yaml
           if grep -q "dependency_overrides:" pubspec.yaml; then
@@ -43,10 +46,10 @@ jobs:
         with:
           flutter-version: '3.19.0'
 
-      - name: 5. 补齐交叉编译依赖并打包 (解决 opus/vpx 缺失)
+      - name: 5. 深度配置工具链并编译 (解决 ar 工具缺失)
         run: |
           sudo apt-get update
-          sudo apt-get install -y nasm gperf cmake llvm-15 clang-15 libclang-15-dev pkg-config
+          sudo apt-get install -y nasm gperf cmake llvm-15 clang-15 libclang-15-dev pkg-config libopus-dev libvpx-dev
 
           rustup target add aarch64-linux-android
           cargo install flutter_rust_bridge_codegen --version 1.80.1
@@ -54,35 +57,32 @@ jobs:
           cd flutter && flutter pub get && cd ..
           flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --skip-deps-check --no-build-runner
           
-          # 【核心修复】：手动为 NDK 补齐缺失的头文件目录
+          # 定义 NDK 全局工具路径
           export ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME
           export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
           export SYSROOT=$TOOLCHAIN/sysroot
           
-          # 创建头文件软链接，欺骗编译器使其能找到 opus 和 vpx
-          # 我们直接利用源码中可能存在的 libs 目录或系统目录
-          sudo mkdir -p $SYSROOT/usr/include/opus
-          sudo mkdir -p $SYSROOT/usr/include/vpx
-          sudo cp /usr/include/opus/*.h $SYSROOT/usr/include/opus/ || true
-          sudo cp /usr/include/vpx/*.h $SYSROOT/usr/include/vpx/ || true
-
-          # 设置环境变量
-          export CC_aarch64_linux_android="$TOOLCHAIN/bin/aarch64-linux-android33-clang --sysroot=$SYSROOT"
-          export CXX_aarch64_linux_android="$TOOLCHAIN/bin/aarch64-linux-android33-clang++ --sysroot=$SYSROOT"
-          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$TOOLCHAIN/bin/aarch64-linux-android33-clang"
+          # 【核心修复】：显式指定所有交叉编译工具
+          export CC_aarch64_linux_android=$TOOLCHAIN/bin/aarch64-linux-android33-clang
+          export CXX_aarch64_linux_android=$TOOLCHAIN/bin/aarch64-linux-android33-clang++
+          export AR_aarch64_linux_android=$TOOLCHAIN/bin/llvm-ar
+          export NM_aarch64_linux_android=$TOOLCHAIN/bin/llvm-nm
+          export RANLIB_aarch64_linux_android=$TOOLCHAIN/bin/llvm-ranlib
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$TOOLCHAIN/bin/aarch64-linux-android33-clang
           
-          # 强制开启捆绑模式，忽略系统库检测
+          # 针对 opus/vpx 编译脚本的额外补丁
+          export CFLAGS_aarch64_linux_android="--sysroot=$SYSROOT -I$SYSROOT/usr/include -I/usr/include"
           export OPUS_BUNDLED=1
-          export LIBVPX_LIB_DIR=/usr/lib/aarch64-linux-gnu
-          
-          # 运行 Rust 编译
+
+          # 编译 Rust 核心
           cargo build --release --target aarch64-linux-android
 
       - name: 6. 最终打包 APK
         run: |
           cd flutter
           mkdir -p android/app/src/main/jniLibs/arm64-v8a
-          cp ../target/aarch64-linux-android/release/librustdesk.so android/app/src/main/jniLibs/arm64-v8a/ || true
+          # 确保 so 文件被复制到正确位置
+          cp ../target/aarch64-linux-android/release/librustdesk.so android/app/src/main/jniLibs/arm64-v8a/ || echo "Warning: SO file not found!"
           flutter build apk --release --target-platform android-arm64 --no-tree-shake-icons --no-pub
 
       - name: 7. 上传编译成功的 APK
