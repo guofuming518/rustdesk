@@ -14,7 +14,7 @@ jobs:
 
       - name: 2. 注入配置与环境补丁
         run: |
-          # 注入你的域名与公钥
+          # 注入域名与公钥
           sed -i "s#pub const RENDEZVOUS_SERVER: \&str = \"\";#pub const RENDEZVOUS_SERVER: \&str = \"rustdesk.hongde-group.com\";#g" libs/hbb_common/src/config.rs
           sed -i "s#pub const RS_PUB_KEY: \&str = \"\";#pub const RS_PUB_KEY: \&str = \"DAhutu@2025\";#g" libs/hbb_common/src/config.rs
           
@@ -22,8 +22,7 @@ jobs:
           sed -i 's/applicationId "com.carriez.flutter_hbb"/applicationId "com.dahuturd.app"/g' flutter/android/app/build.gradle
           sed -i 's/android:label="RustDesk"/android:label="myrd_"/g' flutter/android/app/src/main/AndroidManifest.xml
 
-          # 【关键补丁】：强制 Rust 跳过 opus 的自动检测逻辑
-          # 修改 Cargo.toml 强行开启 bundled 模式
+          # 【关键】：开启所有底层库的 Bundled 特性，防止外部搜索
           find . -name "Cargo.toml" -exec sed -i 's/magnum-opus = "0.4.0"/magnum-opus = { version = "0.4.0", features = ["bundled"] }/g' {} +
 
           # 修复依赖冲突
@@ -47,39 +46,35 @@ jobs:
         with:
           flutter-version: '3.19.0'
 
-      - name: 5. 强制手动构建 (彻底解决 opus 报错)
+      - name: 5. 深度配置 NDK 系统路径并编译 (解决 bits/header 报错)
         run: |
           sudo apt-get update
-          sudo apt-get install -y nasm gperf cmake llvm-15 clang-15 libclang-15-dev \
-                                 pkg-config libopus-dev libvpx-dev libx11-dev
+          sudo apt-get install -y nasm gperf cmake llvm-15 clang-15 libclang-15-dev pkg-config
 
           export LLVM_PATH=/usr/lib/llvm-15
           rustup target add aarch64-linux-android
           cargo install flutter_rust_bridge_codegen --version 1.80.1
           
-          # 准备代码生成
           cd flutter && flutter pub get && cd ..
-          flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs \
-                                      --dart-output flutter/lib/generated_bridge.dart \
-                                      --skip-deps-check --no-build-runner
+          flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --skip-deps-check --no-build-runner
           
-          # 提取 NDK 路径
+          # 【核心修复】：重新定义 NDK 工具链和 Sysroot
           export ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME
           export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
+          export TARGET_SYSROOT=$TOOLCHAIN/sysroot
           
-          # 【防御性变量】：防止任何第三方库尝试探测系统环境
-          export VCPKG_ROOT="/tmp/fake_vcpkg"
-          mkdir -p $VCPKG_ROOT
+          # 强制编译器只看 NDK 内部，不要看宿主机 /usr/include
+          export CLANG_FLAGS="--sysroot=$TARGET_SYSROOT -I$TARGET_SYSROOT/usr/include/aarch64-linux-android"
+          export CC_aarch64_linux_android="$TOOLCHAIN/bin/aarch64-linux-android33-clang $CLANG_FLAGS"
+          export CXX_aarch64_linux_android="$TOOLCHAIN/bin/aarch64-linux-android33-clang++ $CLANG_FLAGS"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$TOOLCHAIN/bin/aarch64-linux-android33-clang"
+          export AR_aarch64_linux_android="$TOOLCHAIN/bin/llvm-ar"
+          
+          # 绕过 opus/vcpkg 检测
+          export VCPKG_ROOT="/tmp/fake" && mkdir -p $VCPKG_ROOT
           export OPUS_BUNDLED=1
-          export MAGNUM_OPUS_SKIP_BUILD=1
-          
-          # 强制指定 NDK 工具链
-          export CC_aarch64_linux_android=$TOOLCHAIN/bin/aarch64-linux-android33-clang
-          export CXX_aarch64_linux_android=$TOOLCHAIN/bin/aarch64-linux-android33-clang++
-          export AR_aarch64_linux_android=$TOOLCHAIN/bin/llvm-ar
-          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$TOOLCHAIN/bin/aarch64-linux-android33-clang
-          
-          # 执行编译
+
+          # 编译 Rust
           cargo build --release --target aarch64-linux-android
 
       - name: 6. 最终打包 APK
