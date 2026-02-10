@@ -1,0 +1,72 @@
+name: 1.4.0终极成功方案
+on: 
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+        with:
+          ref: '1.4.0'
+          submodules: recursive
+
+      - name: 自动替换配置信息
+        run: |
+          # 1. 修改服务器 IP (请把 1.2.3.4 换成你自己的中继服务器IP)
+          sed -i 's/pub const RENDEZVOUS_SERVER: \&str = "";/pub const RENDEZVOUS_SERVER: \&str = "rustdesk.hongde-group.com";/g' libs/hbb_common/src/config.rs
+          
+          # 2. 修改公共 KEY (请把 YOUR_PUB_KEY 换成你服务器生成的 key)
+          sed -i 's/pub const RS_PUB_KEY: \&str = "";/pub const RS_PUB_KEY: \&str = "DAhutu@2025";/g' libs/hbb_common/src/config.rs
+          
+          # 3. 修改安卓包名 (这里改成你想要的包名，例如 com.myremote.app)
+          sed -i 's/applicationId "com.carriez.flutter_hbb"/applicationId "com.dahuturd.app"/g' flutter/android/app/build.gradle
+          
+          # 4. 修改软件显示名称 (这里改成你想叫的名字)
+          sed -i 's/android:label="RustDesk"/android:label="myrd"/g' flutter/android/app/src/main/AndroidManifest.xml
+
+      - name: 配置 Java 环境
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: 配置特定的 Flutter 版本 (关键: 降低版本以适配 1.4.0)
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.16.0' # 强制回到 2024 年初的版本，完美适配 ffigen
+
+      - name: 安装 Rust 编译链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: 安装系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nasm gperf libclang-dev cmake
+
+      - name: 手动生成 FFI 绑定 (跳过报错的自动化步骤)
+        run: |
+          cargo install flutter_rust_bridge_codegen --version 1.80.1
+          # 手动触发代码生成，绕过 ffigen 的自动检查
+          flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --dart-decl-output flutter/lib/generated_bridge.freezed.dart
+          
+      - name: 编译 Rust 动态库 (so文件)
+        run: |
+          # 1.4.0 需要先编译 rust 层，否则 flutter build 会找不到库
+          cargo build --release --target aarch64-linux-android -p librustdesk
+
+      - name: 最终编译 APK
+        run: |
+          cd flutter
+          flutter pub get
+          # 加上 --no-tree-shake-icons 防止某些旧图标资源导致编译失败
+          flutter build apk --release --target-platform android-arm64 --no-tree-shake-icons
+
+      - name: 上传成果物
+        uses: actions/upload-artifact@v4
+        with:
+          name: RustDesk-1.4.0-Success-APK
+          path: flutter/build/app/outputs/flutter-apk/app-release.apk
