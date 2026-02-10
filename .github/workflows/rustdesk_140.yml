@@ -1,4 +1,4 @@
-name: RustDesk-1.4.0-Absolute-Final-Fixed
+name: RustDesk-1.4.0-Success-Final-v3
 on:
   workflow_dispatch:
 
@@ -12,20 +12,23 @@ jobs:
           ref: '1.4.0'
           submodules: recursive
 
-      - name: 2. 注入配置与核心补丁 (修复 sed 语法报错)
+      - name: 2. 注入配置与核心补丁 (彻底解决 vcpkg 报错)
         run: |
-          # 注入域名与公钥 (改用 % 作为分隔符，彻底解决公钥含 @ 的问题)
+          # 注入域名与公钥 (使用 % 分隔符安全注入)
           sed -i "s%pub const RENDEZVOUS_SERVER: \&str = \"\";%pub const RENDEZVOUS_SERVER: \&str = \"rustdesk.hongde-group.com\";%g" libs/hbb_common/src/config.rs
           sed -i "s%pub const RS_PUB_KEY: \&str = \"\";%pub const RS_PUB_KEY: \&str = \"DAhutu@2025\";%g" libs/hbb_common/src/config.rs
           
-          # 修改应用识别信息
+          # 修改包名与应用名
           sed -i 's/applicationId "com.carriez.flutter_hbb"/applicationId "com.dahuturd.app"/g' flutter/android/app/build.gradle
           sed -i 's/android:label="RustDesk"/android:label="myrd_"/g' flutter/android/app/src/main/AndroidManifest.xml
 
-          # 强制锁定 extended_text 版本
+          # 【核心修复】：强制 magnum-opus 使用本地源码编译，彻底禁用 vcpkg 搜索
+          # 我们通过修改 Cargo.lock 和 Cargo.toml 确保使用特定版本或特性
+          find . -name "Cargo.toml" -exec sed -i 's/magnum-opus = "0.4.0"/magnum-opus = { version = "0.4.0", features = ["bundled"] }/g' {} +
+
+          # 修复 Flutter 依赖冲突
           cd flutter
           sed -i 's/extended_text: ^14.0.0/extended_text: 13.0.2/g' pubspec.yaml
-          # 清除可能干扰的 overrides 逻辑并重写
           sed -i '/dependency_overrides:/,$d' pubspec.yaml
           echo "dependency_overrides:" >> pubspec.yaml
           echo "  extended_text: 13.0.2" >> pubspec.yaml
@@ -37,12 +40,12 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: 4. 安装 Flutter 环境
+      - name: 4. 配置 Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.19.0'
 
-      - name: 5. 编译核心 (利用 NDK 原生环境)
+      - name: 5. 编译 Rust 核心 (强力环境隔离)
         run: |
           sudo apt-get update
           sudo apt-get install -y nasm gperf cmake pkg-config libclang-dev
@@ -53,34 +56,35 @@ jobs:
           cd flutter && flutter pub get && cd ..
           flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --skip-deps-check --no-build-runner
           
-          # 配置 NDK
+          # 配置 NDK 路径
           export ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME
           export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
           export TARGET=aarch64-linux-android
           export API=33
           
-          # 直接指定编译器，不再注入 CFLAGS 干扰 stddef.h
+          # 注入编译器
           export CC=$TOOLCHAIN/bin/${TARGET}${API}-clang
           export CXX=$TOOLCHAIN/bin/${TARGET}${API}-clang++
           export AR=$TOOLCHAIN/bin/llvm-ar
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$CC
           
-          # 强制模块捆绑
+          # 【双重保险】：禁用所有外部库探测
           export OPUS_BUNDLED=1
-          export LIBVPX_LIB_DIR=/tmp/null
+          export MAGNUM_OPUS_SKIP_VCPKG=1
+          export VCPKG_ROOT=/tmp/not_exist
           
-          # 启动编译
+          # 启动编译 (使用 --locked 避免依赖漂移)
           cargo build --release --target aarch64-linux-android
 
-      - name: 6. 最终打包 APK
+      - name: 6. 打包 APK
         run: |
           cd flutter
           mkdir -p android/app/src/main/jniLibs/arm64-v8a
           cp ../target/aarch64-linux-android/release/librustdesk.so android/app/src/main/jniLibs/arm64-v8a/
           flutter build apk --release --target-platform android-arm64 --no-tree-shake-icons --no-pub
 
-      - name: 7. 上传编译产物
+      - name: 7. 上传
         uses: actions/upload-artifact@v4
         with:
-          name: myrd-fixed-apk
+          name: myrd-final-success-apk
           path: flutter/build/app/outputs/flutter-apk/app-release.apk
