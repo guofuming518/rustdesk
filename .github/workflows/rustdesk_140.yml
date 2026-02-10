@@ -1,4 +1,4 @@
-name: RustDesk-1.4.0-Total-Success-V5
+name: RustDesk-1.4.0-The-Final-Standard
 on:
   workflow_dispatch:
 
@@ -12,18 +12,17 @@ jobs:
           ref: '1.4.0'
           submodules: recursive
 
-      - name: 2. 注入配置并移除受阻依赖 (Opus)
+      - name: 2. 注入配置与环境修复
         run: |
-          # 注入域名与公钥 (使用 % 避开公钥中的 @ 符号)
+          # 注入服务器与公钥 (使用 % 隔离)
           sed -i "s%pub const RENDEZVOUS_SERVER: \&str = \"\";%pub const RENDEZVOUS_SERVER: \&str = \"rustdesk.hongde-group.com\";%g" libs/hbb_common/src/config.rs
           sed -i "s%pub const RS_PUB_KEY: \&str = \"\";%pub const RS_PUB_KEY: \&str = \"DAhutu@2025\";%g" libs/hbb_common/src/config.rs
           
-          # 修改包名和应用名
+          # 修改包名
           sed -i 's/applicationId "com.carriez.flutter_hbb"/applicationId "com.dahuturd.app"/g' flutter/android/app/build.gradle
           sed -i 's/android:label="RustDesk"/android:label="myrd_"/g' flutter/android/app/src/main/AndroidManifest.xml
 
-          # 【核心黑科技】：从所有 Cargo.toml 中暴力删除 magnum-opus
-          # 这会迫使 Rust 忽略这个无法编译的库
+          # 暴力移除 magnum-opus (避免之前的音频库报错)
           find . -name "Cargo.toml" -exec sed -i '/magnum-opus/d' {} +
           
           # 修复 Flutter 依赖冲突
@@ -40,12 +39,12 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: 4. 配置 Flutter 
+      - name: 4. 配置 Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.19.0'
 
-      - name: 5. 编译 Rust 核心 (针对 Android 13)
+      - name: 5. 编译 Rust 核心 (注入关键头文件路径)
         run: |
           sudo apt-get update
           sudo apt-get install -y nasm gperf cmake pkg-config libclang-dev
@@ -56,32 +55,44 @@ jobs:
           cd flutter && flutter pub get && cd ..
           flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --skip-deps-check --no-build-runner
           
-          # 配置 NDK 工具链
+          # --- 核心 NDK 配置 ---
           export ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME
           export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
           export TARGET=aarch64-linux-android
           export API=33
           
+          # 定义编译器与链接器
           export CC=$TOOLCHAIN/bin/${TARGET}${API}-clang
           export CXX=$TOOLCHAIN/bin/${TARGET}${API}-clang++
           export AR=$TOOLCHAIN/bin/llvm-ar
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$CC
           
-          # 禁用一切 vcpkg 探测
-          export VCPKG_ROOT=/tmp/null
+          # 【修复 vpx/vp8.h 缺失问题】
+          # 我们不再使用 VCPKG_ROOT，而是手动通过 BINDGEN_EXTRA_CLANG_ARGS 指向 NDK 系统头文件
+          export BINDGEN_EXTRA_CLANG_ARGS="-I$ANDROID_NDK_HOME/sysroot/usr/include -I$ANDROID_NDK_HOME/sysroot/usr/include/$TARGET"
           
-          # 运行编译
+          # 告诉 scrap 忽略 vcpkg
+          export NO_PKG_CONFIG_LIBVPX=1
+          export LIBVPX_LIB_DIR=/tmp/null
+          
+          # 开始编译
           cargo build --release --target aarch64-linux-android
 
       - name: 6. 最终打包 APK
         run: |
           cd flutter
           mkdir -p android/app/src/main/jniLibs/arm64-v8a
-          cp ../target/aarch64-linux-android/release/librustdesk.so android/app/src/main/jniLibs/arm64-v8a/
+          # 检查编译出的 .so 文件并移动
+          if [ -f ../target/aarch64-linux-android/release/librustdesk.so ]; then
+            cp ../target/aarch64-linux-android/release/librustdesk.so android/app/src/main/jniLibs/arm64-v8a/
+          else
+            echo "Error: librustdesk.so not found!" && exit 1
+          fi
+          
           flutter build apk --release --target-platform android-arm64 --no-tree-shake-icons --no-pub
 
-      - name: 7. 上传生成的 APK
+      - name: 7. 上传
         uses: actions/upload-artifact@v4
         with:
-          name: rustdesk-custom-apk
+          name: myrd-1.4.0-final
           path: flutter/build/app/outputs/flutter-apk/app-release.apk
