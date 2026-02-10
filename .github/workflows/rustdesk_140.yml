@@ -14,15 +14,15 @@ jobs:
 
       - name: 2. 注入配置与强制降级插件
         run: |
-          # 注入域名与公钥 (使用 @ 作为 sed 分隔符最稳健)
-          sed -i "s@pub const RENDEZVOUS_SERVER: \&str = \"\";@pub const RENDEZVOUS_SERVER: \&str = \"rustdesk.hongde-group.com\";@g" libs/hbb_common/src/config.rs
-          sed -i "s@pub const RS_PUB_KEY: \&str = \"\";@pub const RS_PUB_KEY: \&str = \"DAhutu@2025\";@g" libs/hbb_common/src/config.rs
+          # 使用 # 作为分隔符，彻底解决公钥中 @ 符号导致的 sed 报错
+          sed -i "s#pub const RENDEZVOUS_SERVER: \&str = \"\";#pub const RENDEZVOUS_SERVER: \&str = \"rustdesk.hongde-group.com\";#g" libs/hbb_common/src/config.rs
+          sed -i "s#pub const RS_PUB_KEY: \&str = \"\";#pub const RS_PUB_KEY: \&str = \"DAhutu@2025\";#g" libs/hbb_common/src/config.rs
           
           # 修改包名和应用名
           sed -i 's/applicationId "com.carriez.flutter_hbb"/applicationId "com.dahuturd.app"/g' flutter/android/app/build.gradle
-          sed -i 's/android:label="RustDesk"/android:label="myrd"/g' flutter/android/app/src/main/AndroidManifest.xml
+          sed -i 's/android:label="RustDesk"/android:label="myrd_"/g' flutter/android/app/src/main/AndroidManifest.xml
 
-          # 强制锁定依赖版本以兼容 Flutter 3.19
+          # 强制锁定依赖版本以兼容 Flutter 3.19 (解决 Version Solving 报错)
           cd flutter
           sed -i 's/extended_text: ^14.0.0/extended_text: 13.0.2/g' pubspec.yaml
           echo "dependency_overrides:" >> pubspec.yaml
@@ -41,7 +41,6 @@ jobs:
 
       - name: 5. 解决依赖并编译 Rust 核心
         run: |
-          # 安装系统底层工具
           sudo apt-get update
           sudo apt-get install -y nasm gperf cmake llvm-15 clang-15 libclang-15-dev
           
@@ -49,10 +48,10 @@ jobs:
           rustup target add aarch64-linux-android
           cargo install flutter_rust_bridge_codegen --version 1.80.1
           
-          # 先运行一次 pub get 以生成关键的 pubspec.lock 文件，防止 f4a7d8 错误
+          # 先生成 lock 文件防止生成器报错
           cd flutter && flutter pub get && cd ..
           
-          # 手动生成绑定，跳过崩溃的自动扫描
+          # 生成绑定代码
           flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs \
                                       --dart-output flutter/lib/generated_bridge.dart \
                                       --skip-deps-check \
