@@ -1,4 +1,4 @@
-name: RustDesk-1.4.0-Android-V25-Success
+name: RustDesk-1.3.7-Stable-Build-V27
 on:
   workflow_dispatch:
 
@@ -6,48 +6,37 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 拉取 1.4.0 源码
+      - name: 1. 拉取 1.3.7 源码
         uses: actions/checkout@v4
         with:
-          ref: '1.4.0'
+          ref: '1.3.7' # 锁定 1.3.7
           submodules: recursive
 
-      - name: 2. 深度环境准备 (包含音频开发库)
+      - name: 2. 安装环境依赖
         run: |
           sudo apt-get update
-          # 安装 libopus-dev 以解决 magnum-opus 编译需求
-          sudo apt-get install -y nasm gperf cmake pkg-config libclang-dev protobuf-compiler python3 libopus-dev
+          sudo apt-get install -y nasm gperf cmake pkg-config libclang-dev protobuf-compiler python3
           rustup target add aarch64-linux-android
           cargo install flutter_rust_bridge_codegen --version 1.80.1
 
-      - name: 3. 注入配置与“逻辑对齐”
+      - name: 3. 针对 1.3.7 的“降维打击”补丁
         run: |
-          # A. 注入服务器信息
+          # A. 配置服务器信息
           sed -i "s%pub const RENDEZVOUS_SERVER: \&str = \"\";%pub const RENDEZVOUS_SERVER: \&str = \"rustdesk.hongde-group.com\";%g" libs/hbb_common/src/config.rs
           sed -i "s%pub const RS_PUB_KEY: \&str = \"\";%pub const RS_PUB_KEY: \&str = \"DAhutu@2025\";%g" libs/hbb_common/src/config.rs
           
-          # B. 修改包名
+          # B. 修改包名标识 (兼容 1.3.7 路径)
           sed -i 's/applicationId "com.carriez.flutter_hbb"/applicationId "com.dahuturd.app"/g' flutter/android/app/build.gradle
           sed -i 's/android:label="RustDesk"/android:label="myrd_"/g' flutter/android/app/src/main/AndroidManifest.xml
 
-          # C. 【依赖对齐】：删除旧锁，允许 Cargo 重新解析 RustDesk 官方仓库依赖
-          rm -f Cargo.lock
-
-          # D. 【物理修复】：用 Python 重建干扰项 build.rs (针对图 1770783551198)
+          # C. 物理清理所有 build.rs (1.3.7 无需保留复杂的 build 逻辑)
           python3 -c "
           import os
           for root, dirs, files in os.walk('.'):
-              if 'hbb_common' in root or 'magnum-opus' in root: continue
               if 'build.rs' in files:
                   path = os.path.join(root, 'build.rs')
                   with open(path, 'w') as f: f.write('fn main() {}')
           "
-
-          # E. 【Flutter 降级修复】：解决 extended_text 冲突 (针对图 1770782353928)
-          cd flutter
-          rm -f pubspec.lock
-          sed -i 's/extended_text: .*/extended_text: 13.0.2/g' pubspec.yaml
-          cd ..
 
       - name: 4. 配置 Flutter (3.19.0)
         uses: subosito/flutter-action@v2
@@ -56,12 +45,9 @@ jobs:
 
       - name: 5. 编译 Rust 核心
         run: |
-          # 强制更新 Cargo 依赖树
-          cargo update
-          
           cd flutter && flutter pub get && cd ..
           
-          # 生成桥接代码 (此时 Cargo 依赖应已正常解析)
+          # 1.3.7 版本的 Codegen 逻辑
           flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --skip-deps-check --no-build-runner
           
           export ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME
@@ -72,10 +58,9 @@ jobs:
           export CXX=$TOOLCHAIN/bin/${TARGET}${API}-clang++
           export AR=$TOOLCHAIN/bin/llvm-ar
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$CC
-          export PROTOC=/usr/bin/protoc
           
-          # 编译，不再手动禁用 features，由 Cargo 自动处理
-          cargo build --release --target aarch64-linux-android --lib --features "flutter"
+          # 1.3.7 编译命令：禁用所有桌面特性，只保留移动端核心
+          cargo build --release --target aarch64-linux-android --lib --no-default-features --features "flutter"
 
       - name: 6. 最终打包 APK
         run: |
@@ -87,5 +72,5 @@ jobs:
       - name: 7. 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: RustDesk-1.4.0-Final-APK
+          name: RustDesk-1.3.7-Stable-APK
           path: flutter/build/app/outputs/flutter-apk/app-release.apk
