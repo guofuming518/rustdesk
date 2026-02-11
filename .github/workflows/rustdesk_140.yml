@@ -1,4 +1,4 @@
-name: RustDesk-1.4.0-Android-V16-Final-Strike
+name: RustDesk-1.4.0-Android-V17-Final-Success
 on:
   workflow_dispatch:
 
@@ -12,7 +12,7 @@ jobs:
           ref: '1.4.0'
           submodules: recursive
 
-      - name: 2. 注入配置与“逻辑对齐”手术
+      - name: 2. 注入配置与“代码净化”手术
         run: |
           # 1. 安全注入服务器配置
           sed -i "s%pub const RENDEZVOUS_SERVER: \&str = \"\";%pub const RENDEZVOUS_SERVER: \&str = \"rustdesk.hongde-group.com\";%g" libs/hbb_common/src/config.rs
@@ -22,17 +22,18 @@ jobs:
           sed -i 's/applicationId "com.carriez.flutter_hbb"/applicationId "com.dahuturd.app"/g' flutter/android/app/build.gradle
           sed -i 's/android:label="RustDesk"/android:label="myrd_"/g' flutter/android/app/src/main/AndroidManifest.xml
 
-          # 3. 【精准修复】：物理绕开 Cargo.toml 的 Feature 冲突
-          # 既要让 Codegen 认得出 Feature，又不让它去调用不存在的依赖
+          # 3. 【核心修正】：修复 V16 的语法写入错误
+          # 显式遍历并重写所有 build.rs，确保内容只有 "fn main() {}"
+          for f in $(find . -name "build.rs"); do
+            echo 'fn main() {}' > "$f"
+          done
+
+          # 4. 修复 Cargo.toml Feature 冲突
           sed -i 's/scrap = { path = "libs\/scrap" }/scrap = { path = "libs\/scrap", optional = true }/' Cargo.toml
           sed -i '/"hwcodec" = \[/,/\]/d' Cargo.toml
           echo 'hwcodec = []' >> Cargo.toml
-
-          # 4. 【致命语法修正】：修复图 image_4a2460.png 的 build.rs 报错
-          # 使用最标准的 fn main 内容，确保没有任何非法字符
-          find . -name "build.rs" -type f -exec sh -c 'echo "fn main() {}" > {}' \;
           
-          # 5. 修复 Flutter 依赖冲突
+          # 5. 修复 Flutter 依赖
           cd flutter
           sed -i 's/extended_text: ^14.0.0/extended_text: 13.0.2/g' pubspec.yaml
           sed -i '/dependency_overrides:/,$d' pubspec.yaml
@@ -73,19 +74,18 @@ jobs:
           export AR=$TOOLCHAIN/bin/llvm-ar
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$CC
           
-          # 核心编译：只保留 flutter 特性，彻底排除 scrap 和 opus 编译路径
+          # 编译：强制不使用默认特性，避免触发 scrap/opus 路径
           cargo build --release --target aarch64-linux-android --lib --no-default-features --features "flutter"
 
       - name: 6. 打包 APK
         run: |
           cd flutter
           mkdir -p android/app/src/main/jniLibs/arm64-v8a
-          # 递归寻找生成的 .so 文件并注入到 Flutter 工程
           find ../target/aarch64-linux-android/release -name "librustdesk.so" -exec cp {} android/app/src/main/jniLibs/arm64-v8a/ \;
           flutter build apk --release --target-platform android-arm64 --no-tree-shake-icons --no-pub
 
       - name: 7. 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: RustDesk-1.4.0-Success-APK
+          name: RustDesk-1.4.0-Custom-APK
           path: flutter/build/app/outputs/flutter-apk/app-release.apk
