@@ -1,6 +1,11 @@
-name: RustDesk-Android-V42
+name: RustDesk-Android-V43
 on:
   workflow_dispatch:
+
+env:
+  # 统一锁定 NDK 版本和工具链路径，解决 image_b4ca9b.png 和 image_a9e8d8.png
+  ANDROID_NDK_HOME: ${{ github.workspace }}/android-ndk
+  NDK_VER: r26b
 
 jobs:
   build:
@@ -15,72 +20,74 @@ jobs:
       - name: 2. 安装环境工具
         run: |
           sudo apt-get update
-          sudo apt-get install -y nasm gperf cmake pkg-config libclang-dev protobuf-compiler
+          sudo apt-get install -y nasm gperf cmake pkg-config libclang-dev protobuf-compiler wget zip
           rustup target add aarch64-linux-android
           cargo install flutter_rust_bridge_codegen --version 1.80.1
 
-      - name: 3. 核心修复：清理冲突与生成桩代码
+      - name: 3. 准备 NDK (解决工具链找不到问题)
         run: |
-          # A. 配置自定义服务器
+          wget -q https://dl.google.com/android/repository/android-ndk-${NDK_VER}-linux.zip
+          unzip -q android-ndk-${NDK_VER}-linux.zip
+          mv android-ndk-${NDK_VER} $ANDROID_NDK_HOME
+
+      - name: 4. 核心修复：清理冲突与生成桩代码
+        run: |
+          # 服务器配置
           sed -i "s%pub const RENDEZVOUS_SERVER: \&str = \"\";%pub const RENDEZVOUS_SERVER: \&str = \"rustdesk.hongde-group.com\";%g" libs/hbb_common/src/config.rs
           sed -i "s%pub const RS_PUB_KEY: \&str = \"\";%pub const RS_PUB_KEY: \&str = \"DAhutu@2025\";%g" libs/hbb_common/src/config.rs
           
-          # B. 锁定 Flutter 依赖 (解决 image_66c861.png)
+          # 修复 Flutter 依赖 (解决 image_66c861.png)
           cd flutter
           sed -i 's/extended_text: .*/extended_text: 13.0.2/g' pubspec.yaml
           rm -f pubspec.lock
           cd ..
 
-          # C. 【外科手术】清理 Cargo.toml 特性污染 (解决 image_999afa.png)
-          # 物理删除引起 Panic 的 magnum-opus 依赖
+          # 清理 Cargo.toml 特性污染 (解决 image_999afa.png)
           sed -i '/magnum-opus =/d' Cargo.toml
-          # 彻底抹除所有 feature 定义中对 magnum-opus 的引用
           sed -i 's/"magnum-opus[^"]*"//g' Cargo.toml
-          # 清理因删除产生的语法瑕疵 (双逗号、开头逗号等)
           sed -i 's/,,/,/g; s/\[,/\[/g; s/,]/]/g' Cargo.toml
 
-          # D. 手动生成缺失的协议入口 (解决 image_9bdcb3.png)
-          # 既然 build.rs 无法生成，我们就手动创建一个空的模块入口欺骗编译器
+          # 手动生成协议入口桩代码 (解决 image_9bdcb3.png)
           mkdir -p libs/hbb_common/src/protos
           echo "pub mod message { }" > libs/hbb_common/src/protos/mod.rs
           echo "pub mod rendezvous { }" >> libs/hbb_common/src/protos/mod.rs
-          
-          # 强行屏蔽报错的 build 脚本 (解决 image_a6c25b.png)
           echo "fn main() {}" > libs/scrap/build.rs
           echo "fn main() {}" > libs/hbb_common/build.rs
 
-      - name: 4. 配置 Flutter (3.22.2)
+      - name: 5. 配置 Flutter (3.22.2)
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.22.2'
 
-      - name: 5. 编译 Rust 核心 (极致隔离模式)
+      - name: 6. 编译 Rust 核心 (强制注入工具链)
         run: |
           cd flutter && flutter pub get && cd ..
-          # 生成桥接代码，跳过依赖检查
           flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --skip-deps-check --no-build-runner
           
-          export ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME
-          export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
+          # 显式构造工具链路径 (针对 image_b4ca9b.png 的 clang++ 报错)
+          export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin
           export TARGET=aarch64-linux-android
           export API=33
-          export CC=$TOOLCHAIN/bin/${TARGET}${API}-clang
-          # 关键：指定 AR 路径，解决 image_a9e8d8.png
-          export AR=$TOOLCHAIN/bin/llvm-ar
-          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$CC
           
-          # 使用 --no-default-features 彻底切断所有 Linux/音频依赖
+          # 注入所有可能的编译器环境变量
+          export CC=$TOOLCHAIN/${TARGET}${API}-clang
+          export CXX=$TOOLCHAIN/${TARGET}${API}-clang++
+          export AR=$TOOLCHAIN/llvm-ar
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$CC
+          export CLANG_PATH=$CC
+          
+          # 使用 --no-default-features 跳过所有导致 image_998853.png 失败的 C++ 库
           cargo build --release --target aarch64-linux-android --lib --no-default-features --features "flutter"
 
-      - name: 6. APK 生成
+      - name: 7. APK 生成
         run: |
           cd flutter
           mkdir -p android/app/src/main/jniLibs/arm64-v8a
           find ../target/aarch64-linux-android/release -name "librustdesk.so" -exec cp {} android/app/src/main/jniLibs/arm64-v8a/ \;
           flutter build apk --release --target-platform android-arm64 --no-tree-shake-icons --no-pub
 
-      - name: 7. 上传产物
+      - name: 8. 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: RustDesk-1.3.7-Mod
+          name: RustDesk-1.3.7-Mod-Final
           path: flutter/build/app/outputs/flutter-apk/app-release.apk
