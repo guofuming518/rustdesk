@@ -1,4 +1,4 @@
-name: RustDesk-1.4.0-Android-V18-Final-Success
+name: RustDesk-1.4.0-Android-V19-Success-Final
 on:
   workflow_dispatch:
 
@@ -12,48 +12,50 @@ jobs:
           ref: '1.4.0'
           submodules: recursive
 
-      - name: 2. 环境强力注入 (Protoc & NDK)
+      - name: 2. 深度环境准备 (Protoc & Flutter)
         run: |
           sudo apt-get update
           sudo apt-get install -y nasm gperf cmake pkg-config libclang-dev protobuf-compiler
           rustup target add aarch64-linux-android
           cargo install flutter_rust_bridge_codegen --version 1.80.1
 
-      - name: 3. 注入配置与“定向手术”
+      - name: 3. 注入配置与“双层修复”
         run: |
-          # 1. 注入服务器配置
+          # A. 注入服务器配置
           sed -i "s%pub const RENDEZVOUS_SERVER: \&str = \"\";%pub const RENDEZVOUS_SERVER: \&str = \"rustdesk.hongde-group.com\";%g" libs/hbb_common/src/config.rs
           sed -i "s%pub const RS_PUB_KEY: \&str = \"\";%pub const RS_PUB_KEY: \&str = \"DAhutu@2025\";%g" libs/hbb_common/src/config.rs
           
-          # 2. 修改 Android 标识
+          # B. 修改 Android 包名标识
           sed -i 's/applicationId "com.carriez.flutter_hbb"/applicationId "com.dahuturd.app"/g' flutter/android/app/build.gradle
           sed -i 's/android:label="RustDesk"/android:label="myrd_"/g' flutter/android/app/src/main/AndroidManifest.xml
 
-          # 3. 【协议修复】：恢复 hbb_common 的 Protobuf 生成，但禁用其报错的环境探测
-          # 我们不再清空它的 build.rs，而是通过环境变量告诉它 protoc 在哪里
-          
-          # 4. 【依赖剔除】：修正 Feature 冲突
+          # C. 【核心修复】：解决 Flutter 依赖版本冲突 (对应图 1770781316842)
+          cd flutter
+          # 强制降级 extended_text 以兼容当前的 Flutter SDK
+          sed -i 's/extended_text: ^14.0.0/extended_text: ^13.0.0/g' pubspec.yaml
+          sed -i 's/extended_text: 14.0.0/extended_text: 13.0.0/g' pubspec.yaml
+          cd ..
+
+          # D. 【Rust 逻辑修复】：继续保持 Protobuf 生成，致盲其他 build.rs
           sed -i 's/scrap = { path = "libs\/scrap" }/scrap = { path = "libs\/scrap", optional = true }/' Cargo.toml
           sed -i '/"hwcodec" = \[/,/\]/d' Cargo.toml
           echo 'hwcodec = []' >> Cargo.toml
-
-          # 5. 针对其他子模块，继续保持“致盲”
-          # 注意：跳过 libs/hbb_common 目录，因为它需要 build.rs 生成代码
           find . -name "build.rs" -not -path "*/hbb_common/*" -exec sh -c 'echo "fn main() {}" > {}' \;
 
-      - name: 4. 配置 Flutter 
+      - name: 4. 配置 Flutter 环境
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.19.0'
 
-      - name: 5. 编译 Rust 核心 (启用 PROTOC 环境变量)
+      - name: 5. 编译 Rust 核心
         run: |
+          # 预先拉取 Flutter 依赖，触发 codegen 所需的 bridge
           cd flutter && flutter pub get && cd ..
           
-          # 运行 Codegen 生成 Dart/Rust 桥接
+          # 生成桥接代码
           flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --skip-deps-check --no-build-runner
           
-          # NDK & Protoc 环境变量
+          # NDK & Protoc 环境变量导出
           export ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME
           export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
           export TARGET=aarch64-linux-android
@@ -64,7 +66,7 @@ jobs:
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$CC
           export PROTOC=/usr/bin/protoc
           
-          # 强制编译：禁用默认特性，启用 flutter 特性
+          # 编译 aarch64 动态库
           cargo build --release --target aarch64-linux-android --lib --no-default-features --features "flutter"
 
       - name: 6. 最终打包 APK
@@ -73,9 +75,8 @@ jobs:
           mkdir -p android/app/src/main/jniLibs/arm64-v8a
           find ../target/aarch64-linux-android/release -name "librustdesk.so" -exec cp {} android/app/src/main/jniLibs/arm64-v8a/ \;
           
-          # 修复 Flutter 依赖冲突
-          sed -i 's/extended_text: ^14.0.0/extended_text: 13.0.2/g' pubspec.yaml
-          
+          # 再次确认依赖安装 (防止之前的 Codegen 干扰)
+          flutter pub get
           flutter build apk --release --target-platform android-arm64 --no-tree-shake-icons --no-pub
 
       - name: 7. 上传产物
