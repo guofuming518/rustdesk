@@ -1,4 +1,4 @@
-name: RustDesk-1.4.0-Android-V15-Final-Strike
+name: RustDesk-1.4.0-Android-V16-Final-Strike
 on:
   workflow_dispatch:
 
@@ -12,7 +12,7 @@ jobs:
           ref: '1.4.0'
           submodules: recursive
 
-      - name: 2. 注入配置与“依赖环境模拟”手术
+      - name: 2. 注入配置与“逻辑对齐”手术
         run: |
           # 1. 安全注入服务器配置
           sed -i "s%pub const RENDEZVOUS_SERVER: \&str = \"\";%pub const RENDEZVOUS_SERVER: \&str = \"rustdesk.hongde-group.com\";%g" libs/hbb_common/src/config.rs
@@ -22,13 +22,14 @@ jobs:
           sed -i 's/applicationId "com.carriez.flutter_hbb"/applicationId "com.dahuturd.app"/g' flutter/android/app/build.gradle
           sed -i 's/android:label="RustDesk"/android:label="myrd_"/g' flutter/android/app/src/main/AndroidManifest.xml
 
-          # 3. 【核心修正】：针对 V15 报错，修复 Cargo.toml 的 Feature 逻辑
-          # 我们不删除依赖，而是强制把 scrap 变成可选，并清理掉冲突的 feature 定义
+          # 3. 【精准修复】：物理绕开 Cargo.toml 的 Feature 冲突
+          # 既要让 Codegen 认得出 Feature，又不让它去调用不存在的依赖
           sed -i 's/scrap = { path = "libs\/scrap" }/scrap = { path = "libs\/scrap", optional = true }/' Cargo.toml
           sed -i '/"hwcodec" = \[/,/\]/d' Cargo.toml
           echo 'hwcodec = []' >> Cargo.toml
 
-          # 4. 彻底致盲所有 build.rs
+          # 4. 【致命语法修正】：修复图 image_4a2460.png 的 build.rs 报错
+          # 使用最标准的 fn main 内容，确保没有任何非法字符
           find . -name "build.rs" -type f -exec sh -c 'echo "fn main() {}" > {}' \;
           
           # 5. 修复 Flutter 依赖冲突
@@ -59,10 +60,10 @@ jobs:
           
           cd flutter && flutter pub get && cd ..
           
-          # 生成桥接代码 (此时 Cargo.toml 逻辑已自洽)
+          # 生成桥接代码
           flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --skip-deps-check --no-build-runner
           
-          # NDK 工具链配置
+          # NDK 工具链环境变量
           export ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME
           export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
           export TARGET=aarch64-linux-android
@@ -72,13 +73,14 @@ jobs:
           export AR=$TOOLCHAIN/bin/llvm-ar
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$CC
           
-          # 【致命击杀】：显式禁用导致 Android 报错的所有特性
+          # 核心编译：只保留 flutter 特性，彻底排除 scrap 和 opus 编译路径
           cargo build --release --target aarch64-linux-android --lib --no-default-features --features "flutter"
 
       - name: 6. 打包 APK
         run: |
           cd flutter
           mkdir -p android/app/src/main/jniLibs/arm64-v8a
+          # 递归寻找生成的 .so 文件并注入到 Flutter 工程
           find ../target/aarch64-linux-android/release -name "librustdesk.so" -exec cp {} android/app/src/main/jniLibs/arm64-v8a/ \;
           flutter build apk --release --target-platform android-arm64 --no-tree-shake-icons --no-pub
 
