@@ -1,8 +1,9 @@
-name: RustDesk-Android-V45-Final
+name: RustDesk-Android-V46
 on:
   workflow_dispatch:
 
 env:
+  # 锁定 NDK 路径，确保 ar/clang 始终可用
   ANDROID_NDK_HOME: ${{ github.workspace }}/android-ndk
   NDK_VER: r26b
 
@@ -23,19 +24,26 @@ jobs:
           rustup target add aarch64-linux-android
           cargo install flutter_rust_bridge_codegen --version 1.80.1
 
-      - name: 3. 准备 NDK
+      - name: 3. 下载并部署 NDK (解决工具链找不到问题)
         run: |
           wget -q https://dl.google.com/android/repository/android-ndk-${NDK_VER}-linux.zip
           unzip -q android-ndk-${NDK_VER}-linux.zip
           mv android-ndk-${NDK_VER} $ANDROID_NDK_HOME
 
-      - name: 4. 深度修复：注入完整协议结构体 (解决 image_b55ca5.png)
+      - name: 4. 深度修复：业务逻辑与依赖对齐
         run: |
-          # A. 服务器配置
+          # A. 配置服务器
           sed -i "s%pub const RENDEZVOUS_SERVER: \&str = \"\";%pub const RENDEZVOUS_SERVER: \&str = \"rustdesk.hongde-group.com\";%g" libs/hbb_common/src/config.rs
           sed -i "s%pub const RS_PUB_KEY: \&str = \"\";%pub const RS_PUB_KEY: \&str = \"DAhutu@2025\";%g" libs/hbb_common/src/config.rs
           
-          # B. 修复协议定义 - 注入编译器需要的具体结构体
+          # B. 强制降级 Flutter 插件 (解决 image_b5be9c.png)
+          cd flutter
+          sed -i 's/extended_text: .*/extended_text: 13.0.2/g' pubspec.yaml
+          sed -i 's/extended_text_field: .*/extended_text_field: 12.0.1/g' pubspec.yaml
+          rm -f pubspec.lock
+          cd ..
+
+          # C. 注入完整协议结构体 (解决 image_b55ca5.png 的 67 个错误)
           mkdir -p libs/hbb_common/src/protos
           cat <<EOF > libs/hbb_common/src/protos/mod.rs
           pub mod message {
@@ -54,12 +62,12 @@ jobs:
           pub mod rendezvous { }
           EOF
 
-          # C. 物理抹除特性引用与清理 Cargo.toml (解决 image_999afa.png)
+          # D. 清理 Cargo.toml 特性污染 (解决 image_999afa.png)
           sed -i '/magnum-opus =/d' Cargo.toml
           sed -i 's/"magnum-opus[^"]*"//g' Cargo.toml
           sed -i 's/,,/,/g; s/\[,/\[/g; s/,]/]/g' Cargo.toml
           
-          # D. 禁用报错的 build 脚本 (解决 image_998853.png)
+          # E. 物理屏蔽报错的脚本
           echo "fn main() {}" > libs/scrap/build.rs
           echo "fn main() {}" > libs/hbb_common/build.rs
 
@@ -68,11 +76,12 @@ jobs:
         with:
           flutter-version: '3.22.2'
 
-      - name: 6. 编译 Rust 核心 (强制注入桩代码)
+      - name: 6. 编译 Rust 核心 (隔离模式)
         run: |
           cd flutter && flutter pub get && cd ..
           flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --skip-deps-check --no-build-runner
           
+          # 显式注入所有工具链环境变量
           export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin
           export TARGET=aarch64-linux-android
           export API=33
@@ -81,7 +90,7 @@ jobs:
           export AR=$TOOLCHAIN/llvm-ar
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$CC
           
-          # 必须开启 flutter 特性但关闭所有默认 C++ 依赖
+          # 核心：使用 --no-default-features 彻底切断导致报错的 C++ 库
           cargo build --release --target aarch64-linux-android --lib --no-default-features --features "flutter"
 
       - name: 7. APK 组装
@@ -94,5 +103,5 @@ jobs:
       - name: 8. 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: RustDesk-1.3.7-Fixed-APK
+          name: RustDesk-1.3.7-Mod-V46
           path: flutter/build/app/outputs/flutter-apk/app-release.apk
