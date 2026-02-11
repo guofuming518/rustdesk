@@ -1,4 +1,4 @@
-name: RustDesk-1.4.0-Android-Final-Strike
+name: RustDesk-1.4.0-Android-V15-Final-Strike
 on:
   workflow_dispatch:
 
@@ -12,7 +12,7 @@ jobs:
           ref: '1.4.0'
           submodules: recursive
 
-      - name: 2. 注入配置与“依赖彻底切除”手术
+      - name: 2. 注入配置与“依赖环境模拟”手术
         run: |
           # 1. 安全注入服务器配置
           sed -i "s%pub const RENDEZVOUS_SERVER: \&str = \"\";%pub const RENDEZVOUS_SERVER: \&str = \"rustdesk.hongde-group.com\";%g" libs/hbb_common/src/config.rs
@@ -22,13 +22,13 @@ jobs:
           sed -i 's/applicationId "com.carriez.flutter_hbb"/applicationId "com.dahuturd.app"/g' flutter/android/app/build.gradle
           sed -i 's/android:label="RustDesk"/android:label="myrd_"/g' flutter/android/app/src/main/AndroidManifest.xml
 
-          # 3. 【核心修复】：物理移除 Cargo.toml 中导致 Panic 的依赖项
-          # 解决 magnum-opus 和 scrap 在 Android 构建时的环境报错
-          sed -i '/magnum-opus/d' Cargo.toml
-          sed -i '/scrap =/d' Cargo.toml
-          sed -i '/"hwcodec"/d' Cargo.toml
-          
-          # 4. 强制致盲 build.rs (针对所有子模块)
+          # 3. 【核心修正】：针对 V15 报错，修复 Cargo.toml 的 Feature 逻辑
+          # 我们不删除依赖，而是强制把 scrap 变成可选，并清理掉冲突的 feature 定义
+          sed -i 's/scrap = { path = "libs\/scrap" }/scrap = { path = "libs\/scrap", optional = true }/' Cargo.toml
+          sed -i '/"hwcodec" = \[/,/\]/d' Cargo.toml
+          echo 'hwcodec = []' >> Cargo.toml
+
+          # 4. 彻底致盲所有 build.rs
           find . -name "build.rs" -type f -exec sh -c 'echo "fn main() {}" > {}' \;
           
           # 5. 修复 Flutter 依赖冲突
@@ -45,12 +45,12 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: 4. 配置 Flutter 
+      - name: 4. 配置 Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.19.0'
 
-      - name: 5. 编译 Rust 核心 (启用核心 feature 避开冗余依赖)
+      - name: 5. 编译 Rust 核心
         run: |
           sudo apt-get update
           sudo apt-get install -y nasm gperf cmake pkg-config libclang-dev
@@ -59,10 +59,10 @@ jobs:
           
           cd flutter && flutter pub get && cd ..
           
-          # 生成桥接代码
+          # 生成桥接代码 (此时 Cargo.toml 逻辑已自洽)
           flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --skip-deps-check --no-build-runner
           
-          # NDK 关键环境变量 (强制指定 LLVM 工具链)
+          # NDK 工具链配置
           export ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME
           export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
           export TARGET=aarch64-linux-android
@@ -72,21 +72,18 @@ jobs:
           export AR=$TOOLCHAIN/bin/llvm-ar
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$CC
           
-          # 【强制核心编译】：禁用所有默认特性，仅开启 flutter。这会物理避开 magnum-opus 的编译路径
+          # 【致命击杀】：显式禁用导致 Android 报错的所有特性
           cargo build --release --target aarch64-linux-android --lib --no-default-features --features "flutter"
 
-      - name: 6. 最终打包 APK (资源强制注入)
+      - name: 6. 打包 APK
         run: |
           cd flutter
           mkdir -p android/app/src/main/jniLibs/arm64-v8a
-          # 只要 Rust 产出了任何 .so，我们就提取它
           find ../target/aarch64-linux-android/release -name "librustdesk.so" -exec cp {} android/app/src/main/jniLibs/arm64-v8a/ \;
-          
-          # 执行 Flutter 打包
           flutter build apk --release --target-platform android-arm64 --no-tree-shake-icons --no-pub
 
       - name: 7. 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: RustDesk-1.4.0-Success-Build
+          name: RustDesk-1.4.0-Success-APK
           path: flutter/build/app/outputs/flutter-apk/app-release.apk
