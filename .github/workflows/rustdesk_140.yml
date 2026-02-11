@@ -1,4 +1,4 @@
-name: RustDesk-1.4.0-Android-V19-Success-Final
+name: RustDesk-1.4.0-Android-V20-Final-Success
 on:
   workflow_dispatch:
 
@@ -19,7 +19,7 @@ jobs:
           rustup target add aarch64-linux-android
           cargo install flutter_rust_bridge_codegen --version 1.80.1
 
-      - name: 3. 注入配置与“双层修复”
+      - name: 3. 注入配置与“定向清除”手术
         run: |
           # A. 注入服务器配置
           sed -i "s%pub const RENDEZVOUS_SERVER: \&str = \"\";%pub const RENDEZVOUS_SERVER: \&str = \"rustdesk.hongde-group.com\";%g" libs/hbb_common/src/config.rs
@@ -29,33 +29,34 @@ jobs:
           sed -i 's/applicationId "com.carriez.flutter_hbb"/applicationId "com.dahuturd.app"/g' flutter/android/app/build.gradle
           sed -i 's/android:label="RustDesk"/android:label="myrd_"/g' flutter/android/app/src/main/AndroidManifest.xml
 
-          # C. 【核心修复】：解决 Flutter 依赖版本冲突 (对应图 1770781316842)
-          cd flutter
-          # 强制降级 extended_text 以兼容当前的 Flutter SDK
-          sed -i 's/extended_text: ^14.0.0/extended_text: ^13.0.0/g' pubspec.yaml
-          sed -i 's/extended_text: 14.0.0/extended_text: 13.0.0/g' pubspec.yaml
-          cd ..
+          # C. 【绝对隔离】：安全清空所有导致 Android 编译失败的 build.rs
+          # 显式排除 hbb_common，因为它需要生成 Protobuf 协议
+          # 采用更安全的写入方式，杜绝路径拼接错误
+          find . -name "build.rs" -not -path "*/hbb_common/*" -print0 | xargs -0 -I {} sh -c 'printf "fn main() {}\n" > "{}"'
 
-          # D. 【Rust 逻辑修复】：继续保持 Protobuf 生成，致盲其他 build.rs
+          # D. 【依赖修复】：解决 Cargo.toml 特性冲突
           sed -i 's/scrap = { path = "libs\/scrap" }/scrap = { path = "libs\/scrap", optional = true }/' Cargo.toml
           sed -i '/"hwcodec" = \[/,/\]/d' Cargo.toml
           echo 'hwcodec = []' >> Cargo.toml
-          find . -name "build.rs" -not -path "*/hbb_common/*" -exec sh -c 'echo "fn main() {}" > {}' \;
 
-      - name: 4. 配置 Flutter 环境
+          # E. 【Flutter 修复】：强制降级以兼容 SDK 3.19.0 (对应图 1770781316842)
+          cd flutter
+          sed -i 's/extended_text: ^14.0.0/extended_text: ^13.0.0/g' pubspec.yaml
+          cd ..
+
+      - name: 4. 配置 Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.19.0'
 
       - name: 5. 编译 Rust 核心
         run: |
-          # 预先拉取 Flutter 依赖，触发 codegen 所需的 bridge
           cd flutter && flutter pub get && cd ..
           
           # 生成桥接代码
           flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --skip-deps-check --no-build-runner
           
-          # NDK & Protoc 环境变量导出
+          # 环境变量注入
           export ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME
           export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
           export TARGET=aarch64-linux-android
@@ -66,7 +67,7 @@ jobs:
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$CC
           export PROTOC=/usr/bin/protoc
           
-          # 编译 aarch64 动态库
+          # 编译：确保不带默认特性，仅保留 flutter 核心
           cargo build --release --target aarch64-linux-android --lib --no-default-features --features "flutter"
 
       - name: 6. 最终打包 APK
@@ -74,9 +75,6 @@ jobs:
           cd flutter
           mkdir -p android/app/src/main/jniLibs/arm64-v8a
           find ../target/aarch64-linux-android/release -name "librustdesk.so" -exec cp {} android/app/src/main/jniLibs/arm64-v8a/ \;
-          
-          # 再次确认依赖安装 (防止之前的 Codegen 干扰)
-          flutter pub get
           flutter build apk --release --target-platform android-arm64 --no-tree-shake-icons --no-pub
 
       - name: 7. 上传产物
