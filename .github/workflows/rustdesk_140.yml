@@ -1,4 +1,4 @@
-name: RustDesk-1.4.0-Android-V22-Ultimate
+name: RustDesk-1.4.0-Android-V23-Success
 on:
   workflow_dispatch:
 
@@ -19,7 +19,7 @@ jobs:
           rustup target add aarch64-linux-android
           cargo install flutter_rust_bridge_codegen --version 1.80.1
 
-      - name: 3. 注入配置与“外科手术”
+      - name: 3. 注入配置与“物理级清理”
         run: |
           # A. 配置服务器
           sed -i "s%pub const RENDEZVOUS_SERVER: \&str = \"\";%pub const RENDEZVOUS_SERVER: \&str = \"rustdesk.hongde-group.com\";%g" libs/hbb_common/src/config.rs
@@ -29,27 +29,26 @@ jobs:
           sed -i 's/applicationId "com.carriez.flutter_hbb"/applicationId "com.dahuturd.app"/g' flutter/android/app/build.gradle
           sed -i 's/android:label="RustDesk"/android:label="myrd_"/g' flutter/android/app/src/main/AndroidManifest.xml
 
-          # C. 【核心修复】：用 Python 彻底清空干扰项 build.rs，杜绝语法错误
-          # 这样能保证内容只有 fn main() {}，绝对不会带路径后缀
+          # C. 【物理修复】：用 Python 强制重建所有 build.rs (针对图 1770783551198)
+          # 这样可以确保内容绝对纯净，只有 "fn main() {}"
           python3 -c "
           import os
           for root, dirs, files in os.walk('.'):
               if 'hbb_common' in root: continue
               if 'build.rs' in files:
-                  path = os.path.join(root, 'build.rs')
-                  with open(path, 'w') as f:
-                      f.write('fn main() {}\n')
+                  full_path = os.path.join(root, 'build.rs')
+                  with open(full_path, 'w', encoding='utf-8') as f:
+                      f.write('fn main() { }\n')
           "
 
-          # D. 【Flutter 暴力修复】：解决 extended_text 14.0.0 冲突 (图 1770782353928)
+          # D. 【Flutter 依赖修复】：强制降级 (针对图 1770782353928)
           cd flutter
           rm -f pubspec.lock
-          # 直接删除原本的行并强制插入兼容版本
           sed -i '/extended_text:/d' pubspec.yaml
           sed -i '/dependencies:/a \  extended_text: 13.0.2' pubspec.yaml
           cd ..
 
-          # E. Cargo 特性剥离
+          # E. Cargo 特性解耦
           sed -i 's/scrap = { path = "libs\/scrap" }/scrap = { path = "libs\/scrap", optional = true }/' Cargo.toml
           sed -i '/"hwcodec" = \[/,/\]/d' Cargo.toml
           echo 'hwcodec = []' >> Cargo.toml
@@ -74,6 +73,7 @@ jobs:
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$CC
           export PROTOC=/usr/bin/protoc
           
+          # 核心编译
           cargo build --release --target aarch64-linux-android --lib --no-default-features --features "flutter"
 
       - name: 6. 最终打包 APK
@@ -84,7 +84,7 @@ jobs:
           flutter build apk --release --target-platform android-arm64 --no-tree-shake-icons --no-pub
 
       - name: 7. 上传产物
-        uses: upload-artifact@v4
+        uses: actions/upload-artifact@v4
         with:
-          name: RustDesk-1.4.0-V22-APK
+          name: RustDesk-1.4.0-Success-APK
           path: flutter/build/app/outputs/flutter-apk/app-release.apk
