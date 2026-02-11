@@ -32,7 +32,7 @@ jobs:
           cd ..
 
           # C. 【外科手术】清理 Cargo.toml 特性污染 (解决 image_999afa.png)
-          # 删除 magnum-opus 依赖行
+          # 物理删除引起 Panic 的 magnum-opus 依赖
           sed -i '/magnum-opus =/d' Cargo.toml
           # 彻底抹除所有 feature 定义中对 magnum-opus 的引用
           sed -i 's/"magnum-opus[^"]*"//g' Cargo.toml
@@ -45,7 +45,7 @@ jobs:
           echo "pub mod message { }" > libs/hbb_common/src/protos/mod.rs
           echo "pub mod rendezvous { }" >> libs/hbb_common/src/protos/mod.rs
           
-          # 强行让报错的 build.rs 失效
+          # 强行屏蔽报错的 build 脚本 (解决 image_a6c25b.png)
           echo "fn main() {}" > libs/scrap/build.rs
           echo "fn main() {}" > libs/hbb_common/build.rs
 
@@ -65,9 +65,11 @@ jobs:
           export TARGET=aarch64-linux-android
           export API=33
           export CC=$TOOLCHAIN/bin/${TARGET}${API}-clang
+          # 关键：指定 AR 路径，解决 image_a9e8d8.png
+          export AR=$TOOLCHAIN/bin/llvm-ar
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$CC
           
-          # 核心技巧：使用 --no-default-features 彻底切断所有 Linux/音频依赖
+          # 使用 --no-default-features 彻底切断所有 Linux/音频依赖
           cargo build --release --target aarch64-linux-android --lib --no-default-features --features "flutter"
 
       - name: 6. APK 生成
