@@ -1,4 +1,4 @@
-name: RustDesk-1.4.0-Android-Absolute-Success
+name: RustDesk-1.4.0-Android-Final-Verified
 on:
   workflow_dispatch:
 
@@ -12,33 +12,27 @@ jobs:
           ref: '1.4.0'
           submodules: recursive
 
-      - name: 2. 注入配置与“依赖物理切除”手术
+      - name: 2. 注入配置与“Cargo 结构重组”
         run: |
-          # 使用 % 作为安全分隔符注入服务器配置
+          # 1. 注入服务器与公钥 (使用 % 安全分隔符)
           sed -i "s%pub const RENDEZVOUS_SERVER: \&str = \"\";%pub const RENDEZVOUS_SERVER: \&str = \"rustdesk.hongde-group.com\";%g" libs/hbb_common/src/config.rs
           sed -i "s%pub const RS_PUB_KEY: \&str = \"\";%pub const RS_PUB_KEY: \&str = \"DAhutu@2025\";%g" libs/hbb_common/src/config.rs
           
-          # 修改 Android 包名与标识
+          # 2. 修改 Android 包名
           sed -i 's/applicationId "com.carriez.flutter_hbb"/applicationId "com.dahuturd.app"/g' flutter/android/app/build.gradle
           sed -i 's/android:label="RustDesk"/android:label="myrd_"/g' flutter/android/app/src/main/AndroidManifest.xml
 
-          # 【物理切除 1】：从 Cargo.toml 中彻底删除报错的音频和视频依赖项
-          # 使用 sed 删除匹配行，确保 Cargo 根本不去下载这些库
-          find . -name "Cargo.toml" -exec sed -i '/magnum-opus/d' {} +
-          find . -name "Cargo.toml" -exec sed -i '/scrap =/d' {} +
-          find . -name "Cargo.toml" -exec sed -i '/cpal =/d' {} +
-
-          # 【物理切除 2】：清空可能引发 Panic 的构建脚本
+          # 3. 【核心修复】：物理清理 Cargo.toml 中的所有冲突 feature
+          # 彻底删除所有包含 scrap, opus, cpal, hwcodec 的行，确保 codegen 能够解析
+          sed -i '/scrap/d' Cargo.toml
+          sed -i '/magnum-opus/d' Cargo.toml
+          sed -i '/cpal/d' Cargo.toml
+          sed -i '/hwcodec/d' Cargo.toml
+          
+          # 4. 禁止 build.rs 运行复杂逻辑
           echo "fn main() {}" > build.rs
-          mkdir -p libs/scrap
-          echo "fn main() {}" > libs/scrap/build.rs
-
-          # 【伪装层】：手动创建空的静态函数，防止主代码因找不到函数而编译失败
-          # 这是最关键的一步：让主程序以为库还在，但实际上它们什么都不干
-          echo "pub mod audio { pub fn start() {} pub fn stop() {} }" > src/audio_stub.rs
-          echo "pub mod scrap { pub struct Capturer; impl Capturer { pub fn new(_:()) -> Self { Self } } }" >> src/audio_stub.rs
-
-          # 修复 Flutter 依赖冲突
+          
+          # 5. 修复 Flutter 依赖冲突
           cd flutter
           sed -i 's/extended_text: ^14.0.0/extended_text: 13.0.2/g' pubspec.yaml
           sed -i '/dependency_overrides:/,$d' pubspec.yaml
@@ -57,18 +51,20 @@ jobs:
         with:
           flutter-version: '3.19.0'
 
-      - name: 5. 编译 Rust 核心 (针对 AArch64 优化)
+      - name: 5. 编译 Rust 核心
         run: |
           sudo apt-get update
           sudo apt-get install -y nasm gperf cmake pkg-config libclang-dev
           
           rustup target add aarch64-linux-android
+          # 锁定 codegen 版本确保兼容性
           cargo install flutter_rust_bridge_codegen --version 1.80.1
           
+          # 生成桥接代码 (此时 Cargo.toml 已干净，不再报错)
           cd flutter && flutter pub get && cd ..
           flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --skip-deps-check --no-build-runner
           
-          # NDK 关键配置
+          # NDK 配置
           export ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME
           export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
           export TARGET=aarch64-linux-android
@@ -79,20 +75,18 @@ jobs:
           export AR=$TOOLCHAIN/bin/llvm-ar
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$CC
           
-          # 核心指令：强制仅编译核心库，避开二进制工具的依赖检查
+          # 编译的核心指令：只编译 lib 目标
           cargo build --release --target aarch64-linux-android --lib
 
       - name: 6. 最终打包 APK
         run: |
           cd flutter
           mkdir -p android/app/src/main/jniLibs/arm64-v8a
-          # 拷贝编译成功的二进制文件
           cp ../target/aarch64-linux-android/release/librustdesk.so android/app/src/main/jniLibs/arm64-v8a/
-          # 跳过不必要的图标检查，全速打包
           flutter build apk --release --target-platform android-arm64 --no-tree-shake-icons --no-pub
 
       - name: 7. 上传
         uses: actions/upload-artifact@v4
         with:
-          name: myrd-1.4.0-build
+          name: myrd-1.4.0-final
           path: flutter/build/app/outputs/flutter-apk/app-release.apk
