@@ -1,4 +1,4 @@
-name: RustDesk-1.4.0-Android-V17-Final-Success
+name: RustDesk-1.4.0-Android-V18-Final-Success
 on:
   workflow_dispatch:
 
@@ -12,59 +12,48 @@ jobs:
           ref: '1.4.0'
           submodules: recursive
 
-      - name: 2. 注入配置与“代码净化”手术
+      - name: 2. 环境强力注入 (Protoc & NDK)
         run: |
-          # 1. 安全注入服务器配置
+          sudo apt-get update
+          sudo apt-get install -y nasm gperf cmake pkg-config libclang-dev protobuf-compiler
+          rustup target add aarch64-linux-android
+          cargo install flutter_rust_bridge_codegen --version 1.80.1
+
+      - name: 3. 注入配置与“定向手术”
+        run: |
+          # 1. 注入服务器配置
           sed -i "s%pub const RENDEZVOUS_SERVER: \&str = \"\";%pub const RENDEZVOUS_SERVER: \&str = \"rustdesk.hongde-group.com\";%g" libs/hbb_common/src/config.rs
           sed -i "s%pub const RS_PUB_KEY: \&str = \"\";%pub const RS_PUB_KEY: \&str = \"DAhutu@2025\";%g" libs/hbb_common/src/config.rs
           
-          # 2. 修改 Android 包名与标识
+          # 2. 修改 Android 标识
           sed -i 's/applicationId "com.carriez.flutter_hbb"/applicationId "com.dahuturd.app"/g' flutter/android/app/build.gradle
           sed -i 's/android:label="RustDesk"/android:label="myrd_"/g' flutter/android/app/src/main/AndroidManifest.xml
 
-          # 3. 【核心修正】：修复 V16 的语法写入错误
-          # 显式遍历并重写所有 build.rs，确保内容只有 "fn main() {}"
-          for f in $(find . -name "build.rs"); do
-            echo 'fn main() {}' > "$f"
-          done
-
-          # 4. 修复 Cargo.toml Feature 冲突
+          # 3. 【协议修复】：恢复 hbb_common 的 Protobuf 生成，但禁用其报错的环境探测
+          # 我们不再清空它的 build.rs，而是通过环境变量告诉它 protoc 在哪里
+          
+          # 4. 【依赖剔除】：修正 Feature 冲突
           sed -i 's/scrap = { path = "libs\/scrap" }/scrap = { path = "libs\/scrap", optional = true }/' Cargo.toml
           sed -i '/"hwcodec" = \[/,/\]/d' Cargo.toml
           echo 'hwcodec = []' >> Cargo.toml
-          
-          # 5. 修复 Flutter 依赖
-          cd flutter
-          sed -i 's/extended_text: ^14.0.0/extended_text: 13.0.2/g' pubspec.yaml
-          sed -i '/dependency_overrides:/,$d' pubspec.yaml
-          echo "dependency_overrides:" >> pubspec.yaml
-          echo "  extended_text: 13.0.2" >> pubspec.yaml
-          cd ..
 
-      - name: 3. 环境准备 (JDK 17 & Flutter 3.19.0)
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
+          # 5. 针对其他子模块，继续保持“致盲”
+          # 注意：跳过 libs/hbb_common 目录，因为它需要 build.rs 生成代码
+          find . -name "build.rs" -not -path "*/hbb_common/*" -exec sh -c 'echo "fn main() {}" > {}' \;
 
-      - name: 4. 配置 Flutter
+      - name: 4. 配置 Flutter 
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.19.0'
 
-      - name: 5. 编译 Rust 核心
+      - name: 5. 编译 Rust 核心 (启用 PROTOC 环境变量)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y nasm gperf cmake pkg-config libclang-dev
-          rustup target add aarch64-linux-android
-          cargo install flutter_rust_bridge_codegen --version 1.80.1
-          
           cd flutter && flutter pub get && cd ..
           
-          # 生成桥接代码
+          # 运行 Codegen 生成 Dart/Rust 桥接
           flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --skip-deps-check --no-build-runner
           
-          # NDK 工具链环境变量
+          # NDK & Protoc 环境变量
           export ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME
           export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
           export TARGET=aarch64-linux-android
@@ -73,19 +62,24 @@ jobs:
           export CXX=$TOOLCHAIN/bin/${TARGET}${API}-clang++
           export AR=$TOOLCHAIN/bin/llvm-ar
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$CC
+          export PROTOC=/usr/bin/protoc
           
-          # 编译：强制不使用默认特性，避免触发 scrap/opus 路径
+          # 强制编译：禁用默认特性，启用 flutter 特性
           cargo build --release --target aarch64-linux-android --lib --no-default-features --features "flutter"
 
-      - name: 6. 打包 APK
+      - name: 6. 最终打包 APK
         run: |
           cd flutter
           mkdir -p android/app/src/main/jniLibs/arm64-v8a
           find ../target/aarch64-linux-android/release -name "librustdesk.so" -exec cp {} android/app/src/main/jniLibs/arm64-v8a/ \;
+          
+          # 修复 Flutter 依赖冲突
+          sed -i 's/extended_text: ^14.0.0/extended_text: 13.0.2/g' pubspec.yaml
+          
           flutter build apk --release --target-platform android-arm64 --no-tree-shake-icons --no-pub
 
       - name: 7. 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: RustDesk-1.4.0-Custom-APK
+          name: RustDesk-1.4.0-Success-APK
           path: flutter/build/app/outputs/flutter-apk/app-release.apk
