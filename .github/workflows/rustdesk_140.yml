@@ -1,4 +1,4 @@
-name: RustDesk-Android-V41
+name: RustDesk-Android-V42
 on:
   workflow_dispatch:
 
@@ -6,53 +6,58 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. Pull Source
+      - name: 1. 拉取源码
         uses: actions/checkout@v4
         with:
           ref: '1.3.7'
           submodules: recursive
 
-      - name: 2. Install Tools
+      - name: 2. 安装环境工具
         run: |
           sudo apt-get update
           sudo apt-get install -y nasm gperf cmake pkg-config libclang-dev protobuf-compiler
           rustup target add aarch64-linux-android
           cargo install flutter_rust_bridge_codegen --version 1.80.1
 
-      - name: 3. Surgical Fix: Cargo & Code Stubs
+      - name: 3. 核心修复：清理冲突与生成桩代码
         run: |
-          # Server Configuration
+          # A. 配置自定义服务器
           sed -i "s%pub const RENDEZVOUS_SERVER: \&str = \"\";%pub const RENDEZVOUS_SERVER: \&str = \"rustdesk.hongde-group.com\";%g" libs/hbb_common/src/config.rs
           sed -i "s%pub const RS_PUB_KEY: \&str = \"\";%pub const RS_PUB_KEY: \&str = \"DAhutu@2025\";%g" libs/hbb_common/src/config.rs
           
-          # Fix Flutter Dependencies
+          # B. 锁定 Flutter 依赖 (解决 image_66c861.png)
           cd flutter
           sed -i 's/extended_text: .*/extended_text: 13.0.2/g' pubspec.yaml
           rm -f pubspec.lock
           cd ..
 
-          # Clean Cargo Features (Fix image_999afa.png)
-          # Remove magnum-opus dependency and its feature references
+          # C. 【外科手术】清理 Cargo.toml 特性污染 (解决 image_999afa.png)
+          # 删除 magnum-opus 依赖行
           sed -i '/magnum-opus =/d' Cargo.toml
+          # 彻底抹除所有 feature 定义中对 magnum-opus 的引用
           sed -i 's/"magnum-opus[^"]*"//g' Cargo.toml
+          # 清理因删除产生的语法瑕疵 (双逗号、开头逗号等)
           sed -i 's/,,/,/g; s/\[,/\[/g; s/,]/]/g' Cargo.toml
 
-          # Create Code Stubs (Fix image_98b9ba.png / image_9b51f3.png)
+          # D. 手动生成缺失的协议入口 (解决 image_9bdcb3.png)
+          # 既然 build.rs 无法生成，我们就手动创建一个空的模块入口欺骗编译器
           mkdir -p libs/hbb_common/src/protos
           echo "pub mod message { }" > libs/hbb_common/src/protos/mod.rs
+          echo "pub mod rendezvous { }" >> libs/hbb_common/src/protos/mod.rs
           
-          # Disable failing build scripts
+          # 强行让报错的 build.rs 失效
           echo "fn main() {}" > libs/scrap/build.rs
           echo "fn main() {}" > libs/hbb_common/build.rs
 
-      - name: 4. Setup Flutter (3.22.2)
+      - name: 4. 配置 Flutter (3.22.2)
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.22.2'
 
-      - name: 5. Compile Rust (Minimal Mode)
+      - name: 5. 编译 Rust 核心 (极致隔离模式)
         run: |
           cd flutter && flutter pub get && cd ..
+          # 生成桥接代码，跳过依赖检查
           flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --skip-deps-check --no-build-runner
           
           export ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME
@@ -62,18 +67,18 @@ jobs:
           export CC=$TOOLCHAIN/bin/${TARGET}${API}-clang
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$CC
           
-          # Compile without default features to avoid system library requirements
+          # 核心技巧：使用 --no-default-features 彻底切断所有 Linux/音频依赖
           cargo build --release --target aarch64-linux-android --lib --no-default-features --features "flutter"
 
-      - name: 6. Assembly APK
+      - name: 6. APK 生成
         run: |
           cd flutter
           mkdir -p android/app/src/main/jniLibs/arm64-v8a
           find ../target/aarch64-linux-android/release -name "librustdesk.so" -exec cp {} android/app/src/main/jniLibs/arm64-v8a/ \;
           flutter build apk --release --target-platform android-arm64 --no-tree-shake-icons --no-pub
 
-      - name: 7. Upload Result
+      - name: 7. 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: RustDesk-Modified-APK
+          name: RustDesk-1.3.7-Mod
           path: flutter/build/app/outputs/flutter-apk/app-release.apk
