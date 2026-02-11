@@ -1,4 +1,4 @@
-name: RustDesk-Android-V39
+name: RustDesk-Android-V40
 on:
   workflow_dispatch:
 
@@ -21,28 +21,25 @@ jobs:
 
       - name: 3. Surgical Fix: Cargo & Code Stubs
         run: |
-          # A. Server Configuration
+          # Server Configuration
           sed -i "s%pub const RENDEZVOUS_SERVER: \&str = \"\";%pub const RENDEZVOUS_SERVER: \&str = \"rustdesk.hongde-group.com\";%g" libs/hbb_common/src/config.rs
           sed -i "s%pub const RS_PUB_KEY: \&str = \"\";%pub const RS_PUB_KEY: \&str = \"DAhutu@2025\";%g" libs/hbb_common/src/config.rs
           
-          # B. Fix Flutter Dependencies (Ref image_66c861.png)
+          # Fix Flutter Dependencies
           cd flutter
           sed -i 's/extended_text: .*/extended_text: 13.0.2/g' pubspec.yaml
           rm -f pubspec.lock
           cd ..
 
-          # C. Clean Cargo Features (Fix image_999afa.png)
+          # Clean Cargo Features (Fix image_999afa.png)
           # Remove magnum-opus dependency and its feature references
           sed -i '/magnum-opus =/d' Cargo.toml
           sed -i 's/"magnum-opus[^"]*"//g' Cargo.toml
           sed -i 's/,,/,/g; s/\[,/\[/g; s/,]/]/g' Cargo.toml
 
-          # D. Create Code Stubs (Fix image_9bdcb3.png / image_9b51f3.png)
-          # Manually create the files the compiler expects but can't find
+          # Create Code Stubs (Fix image_98b9ba.png / image_9b51f3.png)
           mkdir -p libs/hbb_common/src/protos
           echo "pub mod message { }" > libs/hbb_common/src/protos/mod.rs
-          mkdir -p target/release/build/scrap-9879de53b8407b87/out/
-          touch target/release/build/scrap-9879de53b8407b87/out/yuv_ffi.rs
           
           # Disable failing build scripts
           echo "fn main() {}" > libs/scrap/build.rs
