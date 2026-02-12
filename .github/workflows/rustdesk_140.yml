@@ -1,4 +1,4 @@
-name: RustDesk-Android-V50-Final
+name: RustDesk-Android-V51-Fix
 on:
   workflow_dispatch:
 
@@ -16,7 +16,7 @@ jobs:
           ref: '1.3.7'
           submodules: recursive
 
-      - name: 2. 安装环境工具
+      - name: 2. 安装基础环境
         run: |
           sudo apt-get update
           sudo apt-get install -y nasm gperf cmake pkg-config libclang-dev protobuf-compiler wget zip
@@ -29,13 +29,18 @@ jobs:
           unzip -q android-ndk-${NDK_VER}-linux.zip
           mv android-ndk-${NDK_VER} $ANDROID_NDK_HOME
 
-      - name: 4. 深度修复：注入全接口万能桩代码
+      - name: 4. 深度修复：重构 Cargo 与注入万能存根
         run: |
-          # A. 服务器配置
+          # A. 配置服务器
           sed -i "s%pub const RENDEZVOUS_SERVER: \&str = \"\";%pub const RENDEZVOUS_SERVER: \&str = \"rustdesk.hongde-group.com\";%g" libs/hbb_common/src/config.rs
           sed -i "s%pub const RS_PUB_KEY: \&str = \"\";%pub const RS_PUB_KEY: \&str = \"DAhutu@2025\";%g" libs/hbb_common/src/config.rs
           
-          # B. 解决 Flutter 插件冲突 (image_b5be9c)
+          # B. 解决 Cargo.toml 语法错误 (image_f06295)
+          # 不使用 sed 删减，改为直接替换损坏的依赖行为空字符串，保持数组结构
+          sed -i 's/"magnum-opus",//g' Cargo.toml
+          sed -i 's/"magnum-opus"//g' Cargo.toml
+          
+          # C. 解决 Flutter 插件版本死结 (image_b5be9c)
           cd flutter
           sed -i 's/extended_text: .*/extended_text: 13.0.2/g' pubspec.yaml
           sed -i 's/extended_text_field: .*/extended_text_field: 12.0.1/g' pubspec.yaml
@@ -43,51 +48,48 @@ jobs:
           rm -f pubspec.lock
           cd ..
 
-          # C. 注入全接口桩代码 (解决 image_ee2fe4, image_ef015d)
+          # D. 注入增强型万能桩代码 (解决 image_ef015d)
           mkdir -p libs/hbb_common/src/protos
           cat <<EOF > libs/hbb_common/src/protos/mod.rs
           pub mod message {
               use serde::{Serialize, Deserialize};
               
-              // 万能宏：为结构体生成任何可能被调用的 set_xxx 方法
-              macro_rules! full_stub {
-                  (\$name:ident) => {
-                      #[derive(Serialize, Deserialize, Debug, Clone, Default)]
-                      pub struct \$name { pub union_field: Option<String> }
-                      impl \$name {
-                          pub fn new() -> Self { Self::default() }
-                          pub fn set_done(&mut self, _: impl Into<Option<bool>>) {}
-                          pub fn set_send(&mut self, _: impl Into<Option<bool>>) {}
-                          pub fn set_file_action(&mut self, _: impl Into<Option<FileAction>>) {}
-                          pub fn set_file_response(&mut self, _: impl Into<Option<FileResponse>>) {}
-                          pub fn set_id(&mut self, _: impl Into<Option<i32>>) {}
-                      }
-                  };
+              #[derive(Serialize, Deserialize, Debug, Clone, Default)]
+              pub struct FileResponse {}
+              impl FileResponse {
+                  pub fn new() -> Self { Self::default() }
+                  pub fn set_done(&mut self, _: impl serde::Serialize) {}
+              }
+              
+              #[derive(Serialize, Deserialize, Debug, Clone, Default)]
+              pub struct FileAction {}
+              impl FileAction {
+                  pub fn new() -> Self { Self::default() }
+                  pub fn set_send(&mut self, _: impl serde::Serialize) {}
               }
 
-              full_stub!(FileResponse);
-              full_stub!(FileAction);
-              full_stub!(Message);
+              #[derive(Serialize, Deserialize, Debug, Clone, Default)]
+              pub struct Message { pub union_field: Option<String> }
+              impl Message {
+                  pub fn new() -> Self { Self::default() }
+                  pub fn set_file_action(&mut self, _: impl serde::Serialize) {}
+                  pub fn set_file_response(&mut self, _: impl serde::Serialize) {}
+                  pub fn set_id(&mut self, _: i32) {}
+              }
           }
           pub mod rendezvous { }
           EOF
-
-          # D. 安全清理 Cargo.toml (解决 image_f053d2)
-          # 使用更温和的删除方式，不破坏数组结构
-          sed -i 's/"magnum-opus[^"]*"//g' Cargo.toml
-          sed -i 's/magnum-opus = [^,]*//g' Cargo.toml
-          echo "fn main() {}" > libs/scrap/build.rs
-          echo "fn main() {}" > libs/hbb_common/build.rs
 
       - name: 5. 配置 Flutter (3.22.2)
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.22.2'
 
-      - name: 6. 编译 Rust 核心 (显式类名绕过 Panic)
+      - name: 6. 编译 Rust 核心 (强制通过模式)
         run: |
           cd flutter && flutter pub get && cd ..
-          # 解决 image_ef6ab7：强制指定类名
+          
+          # 显式指定类名，防止生成器 Panic (image_ef6ab7)
           flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --class-name NativeLib --skip-deps-check --no-build-runner
           
           export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin
@@ -98,6 +100,7 @@ jobs:
           export AR=$TOOLCHAIN/llvm-ar
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$CC
           
+          # 禁用默认 Feature，减少对外部 C 库的依赖
           cargo build --release --target aarch64-linux-android --lib --no-default-features --features "flutter"
 
       - name: 7. APK 组装
@@ -107,8 +110,8 @@ jobs:
           find ../target/aarch64-linux-android/release -name "librustdesk.so" -exec cp {} android/app/src/main/jniLibs/arm64-v8a/ \;
           flutter build apk --release --target-platform android-arm64 --no-tree-shake-icons --no-pub
 
-      - name: 8. 上传产物
+      - name: 8. 上传结果
         uses: actions/upload-artifact@v4
         with:
-          name: RustDesk-1.3.7-Mod-Final
+          name: RustDesk-Final-APK
           path: flutter/build/app/outputs/flutter-apk/app-release.apk
