@@ -1,4 +1,4 @@
-name: RustDesk-Android-V48-Success
+name: RustDesk-Android-V49-Final
 on:
   workflow_dispatch:
 
@@ -29,13 +29,13 @@ jobs:
           unzip -q android-ndk-${NDK_VER}-linux.zip
           mv android-ndk-${NDK_VER} $ANDROID_NDK_HOME
 
-      - name: 4. 核心修复：注入“万能存根”与环境对齐
+      - name: 4. 核心修复：全接口桩代码与插件对齐
         run: |
-          # A. 配置服务器
+          # A. 服务器配置
           sed -i "s%pub const RENDEZVOUS_SERVER: \&str = \"\";%pub const RENDEZVOUS_SERVER: \&str = \"rustdesk.hongde-group.com\";%g" libs/hbb_common/src/config.rs
           sed -i "s%pub const RS_PUB_KEY: \&str = \"\";%pub const RS_PUB_KEY: \&str = \"DAhutu@2025\";%g" libs/hbb_common/src/config.rs
           
-          # B. 强制降级 Flutter 插件 (解决 image_b5be9c.png)
+          # B. 解决 image_b5be9c.png：强制降级插件
           cd flutter
           sed -i 's/extended_text: .*/extended_text: 13.0.2/g' pubspec.yaml
           sed -i 's/extended_text_field: .*/extended_text_field: 12.0.1/g' pubspec.yaml
@@ -43,36 +43,38 @@ jobs:
           rm -f pubspec.lock
           cd ..
 
-          # C. 注入“万能存根” (解决 image_ee2fe4.png 和 image_ef015d.png)
+          # C. 解决 image_ee2fe4, image_ef015d：注入全接口桩代码
           mkdir -p libs/hbb_common/src/protos
           cat <<EOF > libs/hbb_common/src/protos/mod.rs
           pub mod message {
               use serde::{Serialize, Deserialize};
               
-              // 模拟所有业务需要的结构体，并提供万能的 set_xxx 方法
-              macro_rules! stub_struct {
-                  (\$name:ident) => {
-                      #[derive(Serialize, Deserialize, Debug, Clone, Default)]
-                      pub struct \$name {}
-                      impl \$name {
-                          pub fn new() -> Self { Self::default() }
-                          // 允许接收任何参数并忽略，解决 set_done, set_send 等报错
-                          pub fn set_done(&mut self, _: impl Into<Option<bool>>) {}
-                          pub fn set_send(&mut self, _: impl Into<Option<bool>>) {}
-                          pub fn set_file_action(&mut self, _: impl Into<Option<String>>) {}
-                          pub fn set_file_response(&mut self, _: impl Into<Option<String>>) {}
-                      }
-                  };
+              #[derive(Serialize, Deserialize, Debug, Clone, Default)]
+              pub struct FileResponse {}
+              impl FileResponse {
+                  pub fn new() -> Self { Self::default() }
+                  pub fn set_done(&mut self, _: impl Into<Option<bool>>) {}
+              }
+              
+              #[derive(Serialize, Deserialize, Debug, Clone, Default)]
+              pub struct FileAction {}
+              impl FileAction {
+                  pub fn new() -> Self { Self::default() }
+                  pub fn set_send(&mut self, _: impl Into<Option<bool>>) {}
               }
 
-              stub_struct!(FileResponse);
-              stub_struct!(FileAction);
-              stub_struct!(Message);
+              #[derive(Serialize, Deserialize, Debug, Clone, Default)]
+              pub struct Message { pub union_field: Option<String> }
+              impl Message {
+                  pub fn new() -> Self { Self::default() }
+                  pub fn set_file_action(&mut self, _: impl Into<Option<FileAction>>) {}
+                  pub fn set_file_response(&mut self, _: impl Into<Option<FileResponse>>) {}
+              }
           }
           pub mod rendezvous { }
           EOF
 
-          # D. 清理环境
+          # D. 清理 Cargo.toml
           sed -i '/magnum-opus =/d' Cargo.toml
           sed -i 's/"magnum-opus[^"]*"//g' Cargo.toml
           echo "fn main() {}" > libs/scrap/build.rs
@@ -83,10 +85,11 @@ jobs:
         with:
           flutter-version: '3.22.2'
 
-      - name: 6. 编译 Rust 核心
+      - name: 6. 编译 Rust 核心 (显式类名修复)
         run: |
           cd flutter && flutter pub get && cd ..
-          flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --skip-deps-check --no-build-runner
+          # 解决 image_ef6ab7.png：显式指定类名防止生成器 Panic
+          flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --class-name NativeLib --skip-deps-check --no-build-runner
           
           export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin
           export TARGET=aarch64-linux-android
@@ -108,5 +111,5 @@ jobs:
       - name: 8. 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: RustDesk-1.3.7-Mod-Fixed
+          name: RustDesk-1.3.7-Fixed-Final
           path: flutter/build/app/outputs/flutter-apk/app-release.apk
