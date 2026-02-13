@@ -1,4 +1,4 @@
-name: RustDesk-Android-V54-Final-Build
+name: RustDesk-Android-V55-Final-Build
 on:
   workflow_dispatch:
 
@@ -16,7 +16,7 @@ jobs:
           ref: '1.3.7'
           submodules: recursive
 
-      - name: 2. 环境准备
+      - name: 2. 安装基础环境
         run: |
           sudo apt-get update
           sudo apt-get install -y nasm gperf cmake pkg-config libclang-dev protobuf-compiler wget zip python3
@@ -29,19 +29,21 @@ jobs:
           unzip -q android-ndk-${NDK_VER}-linux.zip
           mv android-ndk-${NDK_VER} $ANDROID_NDK_HOME
 
-      - name: 4. 核心修复：手动 Trait 与语法校正
+      - name: 4. 深度修复：语法校正与全接口注入
         run: |
           # A. 服务器配置
           sed -i "s%pub const RENDEZVOUS_SERVER: \&str = \"\";%pub const RENDEZVOUS_SERVER: \&str = \"rustdesk.hongde-group.com\";%g" libs/hbb_common/src/config.rs
           sed -i "s%pub const RS_PUB_KEY: \&str = \"\";%pub const RS_PUB_KEY: \&str = \"DAhutu@2025\";%g" libs/hbb_common/src/config.rs
           
-          # B. Python 脚本精准修复 Cargo.toml (解决 image_f06295)
+          # B. Python 精准修复 Cargo.toml (解决 image_f06295)
           python3 -c '
           import os
           path = "Cargo.toml"
           content = open(path).read()
           # 移除受损依赖并清理多余逗号
-          content = content.replace("\"magnum-opus\",", "").replace(", \"magnum-opus\"", "").replace("\"magnum-opus\"", "")
+          for dep in ["magnum-opus", "oboe"]:
+              content = content.replace(f"\"{dep}\",", "").replace(f", \"{dep}\"", "").replace(f"\"{dep}\"", "")
+          # 修复可能产生的双逗号或空数组起始逗号
           content = content.replace(", ,", ",").replace("[,", "[").replace(",]", "]")
           open(path, "w").write(content)
           '
@@ -87,7 +89,7 @@ jobs:
       - name: 6. 编译 Rust 核心
         run: |
           cd flutter
-          # 修复插件版本冲突 (image_890f76)
+          # 修复插件版本死结 (image_890f76)
           sed -i "s/extended_text: .*/extended_text: 13.0.2/g" pubspec.yaml
           flutter pub get
           cd ..
@@ -98,10 +100,10 @@ jobs:
           export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin
           export TARGET=aarch64-linux-android
           export API=33
-          export CC=\$TOOLCHAIN/\${TARGET}\${API}-clang
-          export CXX=\$TOOLCHAIN/\${TARGET}\${API}-clang++
-          export AR=\$TOOLCHAIN/llvm-ar
-          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=\$CC
+          export CC=$TOOLCHAIN/${TARGET}${API}-clang
+          export CXX=$TOOLCHAIN/${TARGET}${API}-clang++
+          export AR=$TOOLCHAIN/llvm-ar
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$CC
           
           cargo build --release --target aarch64-linux-android --lib --no-default-features --features "flutter"
 
@@ -112,8 +114,8 @@ jobs:
           find ../target/aarch64-linux-android/release -name "librustdesk.so" -exec cp {} android/app/src/main/jniLibs/arm64-v8a/ \;
           flutter build apk --release --target-platform android-arm64 --no-tree-shake-icons --no-pub
 
-      - name: 8. 上传结果
+      - name: 8. 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: RustDesk-Final-Package
+          name: RustDesk-Final-APK
           path: flutter/build/app/outputs/flutter-apk/app-release.apk
